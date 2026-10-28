@@ -1,5 +1,11 @@
 # iterm-claude-sidebar
 
+<p align="center">
+  <img src="docs/sidebar.png" alt="Sidebar listing Claude Code sessions grouped by project, with busy, waiting, done and failed states, PR chips and 5h/7d usage meters" width="300">
+  &nbsp;&nbsp;
+  <img src="docs/peek.png" alt="Peek card floating over the list: transcript of a session, a message box, and Interrupt and /clear buttons" width="300">
+</p>
+
 An iTerm2 toolbelt panel that lists your open [Claude Code](https://claude.com/claude-code) sessions grouped by project, shows their state (busy / waiting / done / failed) and focuses the session when you click it.
 
 > Reads Claude Code's undocumented `~/.claude/sessions/*.json` files, which may change between releases.
