@@ -8,6 +8,7 @@ An iTerm2 toolbelt panel that lists your open [Claude Code](https://claude.com/c
 - State per session; "new" badge when one finished while you were elsewhere; macOS notification on waiting/failed
 - Branch, Jira-style key, PR (via `gh`, cached 2 min), context usage %, time in state
 - Filter, collapsible and pinnable projects, hide old done sessions, `+` starts `claude` in the project root
+- Rename sessions in the sidebar (✎ or F2; empty resets): an alias stored by the sidebar, Claude and the tab titles keep the original name
 - Recently closed sessions (last 15) with `claude --resume`
 - Status bar component and a `claude_next_waiting()` function you can bind to a key
 

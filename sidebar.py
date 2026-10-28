@@ -18,10 +18,26 @@ TOOL_ID = "io.github.gluebi.iterm-claude-sidebar"
 STATIC = Path(__file__).parent / "static"
 DATA = Path.home() / "Library" / "Application Support" / "iterm-claude-sidebar"
 CLOSED_FILE = DATA / "closed.json"
+ALIASES_FILE = DATA / "aliases.json"
 UUID = re.compile(r"^[0-9a-f-]{36}$")
 
+
+
+def read_json(file, default):
+    try:
+        return json.loads(file.read_text())
+    except (OSError, ValueError):
+        return default
+
+
+def save_json(file, value):
+    DATA.mkdir(parents=True, exist_ok=True)
+    file.write_text(json.dumps(value))
+
+
 live: list[dict] = []
-closed: list[dict] = json.loads(CLOSED_FILE.read_text()) if CLOSED_FILE.exists() else []
+closed: list[dict] = read_json(CLOSED_FILE, [])
+aliases: dict[str, str] = read_json(ALIASES_FILE, {})  # session id -> name chosen in the sidebar
 unseen: set[str] = set()
 prs: dict[str, tuple[float, dict | None]] = {}  # cwd@branch -> (checked_at, PR)
 iterm_active = True
@@ -90,9 +106,8 @@ async def refresh_pr(s):
     prs[pr_key(s)] = (time.time(), pr)
 
 
-def save_closed():
-    DATA.mkdir(parents=True, exist_ok=True)
-    CLOSED_FILE.write_text(json.dumps(closed))
+def display_name(s):
+    return aliases.get(s["id"], s["name"])
 
 
 async def monitor(app):
@@ -106,7 +121,7 @@ async def monitor(app):
             old = prev.get(sid)
             if old and old["state"] != s["state"] and focus != sid:
                 if s["state"] in state.NEEDS_ATTENTION:
-                    spawn(notify(f"Claude {s['label']}: {s['project']}", s["name"]))
+                    spawn(notify(f"Claude {s['label']}: {s['project']}", display_name(s)))
                 elif s["state"] == "idle":
                     unseen.add(sid)
             checked, pr = prs.get(pr_key(s), (0, None))
@@ -120,10 +135,13 @@ async def monitor(app):
         for sid, old in prev.items():
             if sid not in now:
                 unseen.discard(sid)
-                closed.insert(0, {k: old[k] for k in ("id", "name", "cwd", "project")} | {"closedAt": int(time.time() * 1000)})
+                closed.insert(0, {k: old[k] for k in ("id", "cwd", "project")} | {"name": display_name(old), "closedAt": int(time.time() * 1000)})
                 del closed[15:]
-                save_closed()
+                save_json(CLOSED_FILE, closed)
         closed[:] = [c for c in closed if c["id"] not in now]
+        for sid in aliases.keys() - now.keys() - {c["id"] for c in closed}:  # sessions that are gone and not resumable
+            del aliases[sid]
+            save_json(ALIASES_FILE, aliases)
         prev = now
         await asyncio.sleep(1)
 
@@ -138,7 +156,7 @@ async def focus_monitor(connection):
 
 
 def view(s):
-    return s | {"unseen": s["id"] in unseen, "pr": prs.get(pr_key(s), (0, None))[1]}
+    return s | {"name": display_name(s), "auto": s["name"], "unseen": s["id"] in unseen, "pr": prs.get(pr_key(s), (0, None))[1]}
 
 
 async def open_tab(connection, app, command):
@@ -172,6 +190,18 @@ async def main(connection):
         await activate(session)
         return web.Response(status=204)
 
+    async def rename(_, body):
+        sid = body.get("id")
+        if sid not in {s["id"] for s in live} | {c["id"] for c in closed}:
+            raise web.HTTPNotFound()
+        name = "".join(ch for ch in str(body.get("name", "")) if ch.isprintable()).strip()[:80]
+        if name:
+            aliases[sid] = name
+        else:
+            aliases.pop(sid, None)  # empty resets to Claude's own name
+        save_json(ALIASES_FILE, aliases)
+        return web.Response(status=204)
+
     async def new(_, body):
         if body.get("root") not in {s["root"] for s in live}:
             raise web.HTTPBadRequest()
@@ -196,6 +226,7 @@ async def main(connection):
         web.get("/", lambda _: web.FileResponse(STATIC / "index.html")),
         web.get("/api/sessions", sessions),
         web.post("/api/focus", guarded(focus)),
+        web.post("/api/rename", guarded(rename)),
         web.post("/api/new", guarded(new)),
         web.post("/api/resume", guarded(resume)),
         web.post("/api/open-pr", guarded(open_pr)),

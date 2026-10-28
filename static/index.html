@@ -37,6 +37,10 @@
   .limit .fill { height:100%; background:var(--done); } .limit.warn .fill { background:var(--waiting); } .limit.high .fill { background:var(--failed); }
   .limit .pct { text-align:right; font-variant-numeric:tabular-nums; } .limit .reset { grid-column:2 / 4; color:var(--muted); margin-top:-3px; }
   .limit.stale { opacity:.55; }
+  .item { position:relative; }
+  .edit { position:absolute; top:5px; right:4px; opacity:0; }
+  .item:hover .edit, .edit:focus-visible { opacity:1; } .item:hover .new { visibility:hidden; }
+  input.rename { all:unset; box-sizing:border-box; flex:1; min-width:0; padding:1px 4px; border:1px solid var(--busy); border-radius:4px; background:var(--bg); color:var(--fg); }
   .empty { color:var(--muted); padding:8px; } .err { color:var(--failed); padding:4px; }
   details { margin-top:14px; } summary { cursor:pointer; color:var(--muted); font-size:11px; text-transform:uppercase; letter-spacing:.06em; padding:0 4px; }
 </style>
@@ -75,12 +79,30 @@ $('#hide').value = store.get('hide', '0');
 $('#filter').value = store.get('filter', '');
 let data = { groups: [], closed: [] };
 
+let editing = false;  // pauses re-rendering so the input isn't destroyed mid-edit
+
+function startRename(s, row) {
+  if (editing) return;
+  editing = true;
+  const input = build('input', { className: 'rename', value: s.name, placeholder: s.auto, maxLength: 80, testid: 'session-rename-input', 'aria-label': `New name for ${s.auto} (empty resets)` });
+  const finish = async save => {
+    if (!editing) return;
+    editing = false;
+    if (save) await post('/api/rename', { id: s.id, name: input.value });
+    sig = ''; refresh();
+  };
+  input.onkeydown = e => { e.stopPropagation(); if (e.key === 'Enter') finish(true); else if (e.key === 'Escape') finish(false); };
+  input.onblur = () => finish(false);
+  row.replaceWith(build('div', { className: 'row' }, [build('span', { className: 'dot ' + s.state }), input]));
+  input.focus(); input.select();
+}
+
 function sessionRow(s) {
   const b = build('button', { className: 'row', title: s.cwd, key: 's' + s.id, testid: 'session-' + s.state,
     'aria-label': `${s.name}, ${s.label}${s.unseen ? ', unseen' : ''}`, onclick: e => { e.currentTarget.blur(); post('/api/focus', { id: s.id }); } }, [
     build('span', { className: 'dot ' + s.state }),
     build('span', { className: 'body' }, [
-      build('div', { className: 'name', textContent: s.name }),
+      build('div', { className: 'name', textContent: s.name, title: s.auto !== s.name ? `Claude's name: ${s.auto}` : '' }),
       build('div', { className: 'meta' }, [
         build('span', { textContent: `${s.label} · ${ago(s.since)}` }),
         s.ctx > 0 && build('span', { textContent: `ctx ${s.ctx}%`, title: 'context used (assumes 1M window)' }),
@@ -90,9 +112,14 @@ function sessionRow(s) {
     ]),
     s.unseen && build('span', { className: 'new', textContent: 'new' }),
   ]);
-  return s.pr ? build('div', {}, [b, build('div', { className: 'meta', style: 'padding:0 8px 4px 25px' }, [
-    build('button', { className: 'chip', key: 'c' + s.id, textContent: `PR #${s.pr.number}${s.pr.isDraft ? ' draft' : ''} · ${s.pr.state.toLowerCase()}`, onclick: () => post('/api/open-pr', { url: s.pr.url }) }),
-  ])]) : b;
+  b.onkeydown = e => { if (e.key === 'F2') { e.preventDefault(); startRename(s, b); } };
+  return build('div', { className: 'item' }, [
+    b,
+    build('button', { className: 'icon edit', textContent: '✎', key: 'e' + s.id, title: 'Rename (F2)', 'aria-label': `Rename ${s.name}`, testid: 'session-rename', onclick: () => startRename(s, b) }),
+    s.pr && build('div', { className: 'meta', style: 'padding:0 8px 4px 25px' }, [
+      build('button', { className: 'chip', key: 'c' + s.id, textContent: `PR #${s.pr.number}${s.pr.isDraft ? ' draft' : ''} · ${s.pr.state.toLowerCase()}`, onclick: () => post('/api/open-pr', { url: s.pr.url }) }),
+    ]),
+  ]);
 }
 
 function render() {
@@ -159,7 +186,7 @@ async function refresh() {
     if (version && data.version !== version) return location.reload();  // UI file changed: toolbelt web views never reload on their own
     version = data.version;
     const now = JSON.stringify(data);
-    if (now !== sig || Date.now() - last > 10000) { sig = now; last = Date.now(); render(); }
+    if (!editing && (now !== sig || Date.now() - last > 10000)) { sig = now; last = Date.now(); render(); }
   }
   catch { $('#list').replaceChildren(build('div', { className: 'err', textContent: 'sidebar daemon unreachable' })); }
 }
