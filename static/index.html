@@ -42,6 +42,9 @@
   .peek-btn { position:absolute; top:5px; right:26px; opacity:0; }
   .item:hover .edit, .edit:focus-visible, .item:hover .peek-btn, .peek-btn:focus-visible, .peek-btn[aria-expanded=true] { opacity:1; } .item:hover .new { visibility:hidden; }
   input.field { all:unset; box-sizing:border-box; flex:1; min-width:0; padding:1px 4px; border:1px solid var(--busy); border-radius:4px; background:var(--bg); color:var(--fg); }
+  .peek-resize { display:none; position:absolute; left:-9px; top:12px; bottom:12px; width:14px; cursor:col-resize; touch-action:none; }
+  .peek-resize::after { content:''; position:absolute; left:6px; top:calc(50% - 20px); width:3px; height:40px; border-radius:2px; background:var(--line); }
+  .peek-resize:hover::after, .peek-resize:focus-visible::after { background:var(--busy); } .peek-resize:focus-visible { outline:none; }
   .item.peeked > .row { background:var(--hover); }
   .peek { position:absolute; z-index:20; left:-2px; right:-2px; top:calc(100% + 2px); display:grid; grid-template-columns:minmax(0, 1fr); gap:8px; padding:10px; background:var(--card); border:1px solid var(--line); border-radius:12px; box-shadow:var(--shadow); transform-origin:50% 0; }
   .peek.flip { top:auto; bottom:calc(100% + 2px); transform-origin:50% 100%; }
@@ -80,12 +83,14 @@
   @media (min-width: 720px) {
     body { padding:16px 24px; }
     .tools, footer { max-width:480px; }
-    main { display:grid; grid-template-columns:repeat(auto-fill, minmax(340px, 1fr)); gap:16px; align-content:start; }
+    main { display:grid; grid-template-columns:repeat(auto-fit, minmax(min(100%, 340px), 1fr)); gap:16px; align-content:start; }  /* auto-fit: columns without a card collapse, so cards stretch to the full width */
+    .items { display:grid; grid-template-columns:repeat(auto-fill, minmax(min(100%, 300px), 1fr)); column-gap:12px; }  /* a wide card flows its sessions into columns */
     .group { align-self:start; padding:2px 8px 8px; border:1px solid var(--line); border-radius:12px; background:var(--card); }
     #closed { grid-column:1 / -1; }
-    .peek, .peek.flip { position:fixed; top:16px; right:16px; bottom:16px; left:auto; width:min(520px, 42vw); transform-origin:100% 50%; grid-template-rows:auto minmax(0, 1fr) auto auto auto; z-index:30; }
+    .peek, .peek.flip { box-sizing:border-box; position:fixed; top:16px; right:16px; bottom:16px; left:auto; width:var(--peek-w, min(520px, 42vw)); transform-origin:100% 50%; grid-template-rows:auto minmax(0, 1fr) auto auto auto; z-index:30; }
     .peek-body { max-height:none; min-height:0; }
-    body:has(.peek) main { margin-right:min(548px, calc(42vw + 28px)); }
+    body:has(.peek) main { margin-right:calc(var(--peek-w, min(520px, 42vw)) + 28px); }
+    .peek-resize { display:block; }
     .peek.enter, .peek.flip.enter { animation-name:peek-in-side; } .peek.leave, .peek.flip.leave { animation-name:peek-out-side; }
     @keyframes peek-in-side { from { opacity:0; transform:translateX(16px); } }
     @keyframes peek-out-side { to { opacity:0; transform:translateX(16px); } }
@@ -281,6 +286,28 @@ async function openTerminal(s) {
   term.attachCustomKeyEventHandler(e => { if (e.type === 'keydown' && e.ctrlKey && e.key === ']') { close(); return false; } return true; });
 }
 
+const setPeekWidth = px => {
+  const w = Math.round(Math.min(Math.max(px, 320), innerWidth * 0.7));
+  document.documentElement.style.setProperty('--peek-w', w + 'px'); store.set('peekWidth', w);
+};
+if (store.get('peekWidth')) document.documentElement.style.setProperty('--peek-w', store.get('peekWidth') + 'px');
+let resizing = false;  // pauses re-rendering so the handle isn't replaced mid-drag
+
+function resizeHandle() {
+  const handle = build('div', { className: 'peek-resize', role: 'separator', 'aria-orientation': 'vertical', 'aria-label': 'Resize panel (arrow keys)', tabIndex: 0, testid: 'peek-resize' });
+  const width = () => handle.parentElement.getBoundingClientRect().width;
+  handle.onpointerdown = e => {
+    resizing = true; handle.setPointerCapture(e.pointerId);
+    handle.onpointermove = ev => setPeekWidth(innerWidth - 16 - ev.clientX);
+    handle.onpointerup = () => { resizing = false; handle.onpointermove = handle.onpointerup = null; };
+  };
+  handle.onkeydown = e => {
+    const step = e.key === 'ArrowLeft' ? 24 : e.key === 'ArrowRight' ? -24 : 0;
+    if (step) { e.preventDefault(); setPeekWidth(width() + step); }
+  };
+  return handle;
+}
+
 function peekPanel(s) {
   const body = build('div', { className: 'peek-body ' + peekMode, testid: 'peek-body', tabIndex: 0, 'aria-label': `${peekMode} of ${s.name}` });
   if (peekPayload) fillBody(body, peekPayload); else body.textContent = 'Loading…';
@@ -301,6 +328,7 @@ function peekPanel(s) {
     return btn;
   };
   return build('div', { className: 'peek' + (peekEnter ? ' enter' : ''), role: 'dialog', 'aria-label': `Peek at ${s.name}`, testid: 'peek' }, [
+    resizeHandle(),
     build('div', { className: 'peek-head' }, [
       build('div', { className: 'seg-group', role: 'group', 'aria-label': 'View' }, [seg('transcript', 'Transcript'), seg('screen', 'Screen')]),
       build('span', { className: 'peek-title', textContent: s.name }),
@@ -396,7 +424,7 @@ function render() {
           build('button', { className: 'icon', textContent: '★', title: 'Pin project', key: 'p' + g.project, 'aria-pressed': String(pinned.has(g.project)), onclick: () => toggle(pinned, g.project, 'pinned') }),
           build('button', { className: 'icon', textContent: '+', key: 'n' + g.project, title: `New Claude session in ${g.project}`, onclick: () => post('/api/new', { root: g.root }) }),
         ]),
-        ...(folded ? [] : g.sessions.map(sessionRow)),
+        build('div', { className: 'items' }, folded ? [] : g.sessions.map(sessionRow)),
       ]);
     }),
     !groups.length && build('div', { className: 'empty', textContent: 'No sessions' }),
@@ -444,7 +472,7 @@ async function refresh() {
     version = data.version;
     const now = JSON.stringify(data);
     const typing = document.activeElement?.tagName === 'INPUT' && $('#list').contains(document.activeElement);
-    if (!editing && !typing && !closing && (now !== sig || Date.now() - last > 10000)) { sig = now; last = Date.now(); render(); }
+    if (!editing && !typing && !closing && !resizing && (now !== sig || Date.now() - last > 10000)) { sig = now; last = Date.now(); render(); }
   }
   catch { $('#list').replaceChildren(build('div', { className: 'err', textContent: 'sidebar daemon unreachable' })); }
 }

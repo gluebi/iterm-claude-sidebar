@@ -56,7 +56,7 @@ By default the daemon only listens on `127.0.0.1`. To use it from another device
 
 Then restart (`launchctl kickstart -k gui/$(id -u)/io.github.gluebi.iterm-claude-sidebar`) and put authentication and TLS in the proxy, see [`docs/Caddyfile.example`](docs/Caddyfile.example). The daemon itself has no login.
 
-On a wide screen the page becomes a dashboard with the peek docked on the right; on a phone it stays a single column. Remotely, clicking a session opens its peek (raising a window on the Mac would be pointless), and PR chips are normal links. Peek, send, interrupt, `/clear`, rename, new and resume all work.
+On a wide screen the page becomes a dashboard: project cards share the full width (columns without a card collapse), a wide card flows its sessions into several columns, and the peek docks on the right with a draggable edge (or arrow keys) to resize it; the width is remembered. On a phone it stays a single column. Remotely, clicking a session opens its peek (raising a window on the Mac would be pointless), and PR chips are normal links. Peek, send, interrupt, `/clear`, rename, new and resume all work.
 
 **Security.** Whoever passes the proxy's login can type into every Claude session on the Mac, and sessions started with `--dangerously-skip-permissions` run commands without asking, so treat the login like shell access: strong credentials, TLS, and no exposure of the proxy to the internet unless you accept that. Traffic between the proxy and the Mac is plain HTTP, so keep it on a network you trust.
 
