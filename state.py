@@ -65,16 +65,21 @@ def jira_key(branch: str) -> str:
 
 
 @ttl_cache(5)
-def context_tokens(session_id: str) -> int:
-    """Tokens in the last assistant turn's prompt (input + cache), read from the transcript tail."""
+def transcript_tail(session_id: str, size: int = 262144) -> list[str]:
+    """Last `size` bytes of the session transcript as lines (the first may be cut); empty if it doesn't exist yet."""
     path = next(Path.home().glob(f".claude/projects/*/{session_id}.jsonl"), None)
     if not path:
-        return 0
+        return []
     with path.open("rb") as f:
         f.seek(0, os.SEEK_END)
-        f.seek(max(0, f.tell() - 262144))
-        lines = f.read().decode(errors="ignore").splitlines()
-    for line in reversed(lines):
+        f.seek(max(0, f.tell() - size))
+        return f.read().decode(errors="ignore").splitlines()
+
+
+@ttl_cache(5)
+def context_tokens(session_id: str) -> int:
+    """Tokens in the last assistant turn's prompt (input + cache), read from the transcript tail."""
+    for line in reversed(transcript_tail(session_id)):
         if '"usage"' not in line:
             continue
         try:
@@ -83,6 +88,37 @@ def context_tokens(session_id: str) -> int:
             continue
         return sum(u.get(k, 0) for k in ("input_tokens", "cache_read_input_tokens", "cache_creation_input_tokens"))
     return 0
+
+
+def tool_label(block: dict) -> str:
+    args = block.get("input") or {}
+    detail = next((str(args[k]) for k in ("command", "file_path", "pattern", "description", "url", "prompt") if k in args), "")
+    return f"{block.get('name', 'tool')} {' '.join(detail.split())[:80]}".strip()
+
+
+def conversation(session_id: str, limit: int = 8) -> list[dict]:
+    """The last few user/assistant turns as plain text with tool calls summarised; no thinking, tool output or injected notices."""
+    items = []
+    for line in reversed(transcript_tail(session_id, 524288)):
+        if len(items) >= limit:
+            break
+        try:
+            d = json.loads(line)
+            content = d["message"]["content"]
+        except (ValueError, KeyError, TypeError):
+            continue
+        if d.get("type") not in ("user", "assistant") or d.get("isSidechain"):
+            continue
+        parts = []
+        for b in [{"type": "text", "text": content}] if isinstance(content, str) else content:
+            if b.get("type") == "text" and b["text"].strip() and not b["text"].lstrip().startswith("<") and "<system-reminder>" not in b["text"]:
+                parts.append(b["text"].strip())
+            elif b.get("type") == "tool_use":
+                parts.append("▸ " + tool_label(b))
+        if parts:
+            text = "\n".join(parts)
+            items.append({"role": d["type"], "text": text if len(text) <= 600 else text[:600] + "…"})
+    return items[::-1]
 
 
 def alive(pid: int) -> bool:
@@ -154,4 +190,6 @@ if __name__ == "__main__":
     assert project_of("/nonexistent/my-repo-4") == "my-repo"
     assert jira_key("alice/abc-123-fix-thing") == "ABC-123" and jira_key("master") == ""
     assert jira_key("feature/abc123") == ""
+    assert tool_label({"name": "Bash", "input": {"command": "ls  -la\n/tmp"}}) == "Bash ls -la /tmp"
+    assert conversation("no-such-session") == []
     print("ok")

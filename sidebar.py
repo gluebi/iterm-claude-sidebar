@@ -83,6 +83,32 @@ async def find_session(app, pid):
     return next((s for s, t in zip(sessions, ttys) if t == tty), None)
 
 
+async def read_screen(session):
+    """(visible lines, text on the cursor's row before the cursor)."""
+    contents = await session.async_get_screen_contents()
+    row = lambda i: contents.line(i).string.replace("\x00", " ")  # NUL marks empty cells
+    lines = [row(i).rstrip() for i in range(contents.number_of_lines)]
+    while lines and not lines[-1]:
+        lines.pop()
+    cursor = contents.cursor_coord
+    return lines, row(cursor.y)[:cursor.x]
+
+
+def draft_of(typed):
+    """Text already typed at Claude's prompt; the placeholder shown after the cursor is not a draft."""
+    typed = typed.strip()
+    return typed[1:].strip() if typed.startswith("❯") else ""
+
+
+@web.middleware
+async def protect(request, handler):
+    if request.host != f"127.0.0.1:{PORT}":  # DNS rebinding
+        raise web.HTTPForbidden()
+    if request.path.startswith("/api/") and request.headers.get("X-Sidebar") != "1":  # forces a CORS preflight cross-site
+        raise web.HTTPForbidden()
+    return await handler(request)
+
+
 async def focused_id(app):
     window = app.current_terminal_window
     session = window and window.current_tab and window.current_tab.current_session
@@ -173,8 +199,6 @@ async def main(connection):
 
     def guarded(handler):
         async def inner(request):
-            if request.headers.get("X-Sidebar") != "1":  # blocks cross-site form posts
-                raise web.HTTPForbidden()
             return await handler(request, await request.json())
         return inner
 
@@ -202,6 +226,37 @@ async def main(connection):
         save_json(ALIASES_FILE, aliases)
         return web.Response(status=204)
 
+    async def peek(request):
+        match = next((s for s in live if s["id"] == request.query.get("id")), None)
+        if not match:
+            raise web.HTTPNotFound()
+        if request.query.get("mode") == "screen":
+            session = await find_session(app, match["pid"])
+            if not session:
+                raise web.HTTPNotFound()
+            return web.json_response({"lines": (await read_screen(session))[0]})
+        return web.json_response({"items": await asyncio.to_thread(state.conversation, match["id"])})
+
+    async def send(_, body):
+        match = next((s for s in live if s["id"] == body.get("id")), None)
+        session = match and await find_session(app, match["pid"])
+        if not session:
+            raise web.HTTPNotFound()
+        if body.get("key") == "esc":
+            await session.async_send_text("\x1b")
+            return web.Response(status=204)
+        text = body.get("text")
+        if not isinstance(text, str) or not text.strip() or len(text) > 2000 or not text.isprintable():
+            raise web.HTTPBadRequest()  # single line only: a newline would submit early
+        if not body.get("force"):
+            if match["state"] == "waiting":
+                return web.json_response({"reason": "waiting", "detail": "The session is waiting for input; text would go into that prompt."}, status=409)
+            draft = draft_of((await read_screen(session))[1])
+            if draft:
+                return web.json_response({"reason": "draft", "detail": f"Unsent text at the prompt: {draft[:80]}"}, status=409)
+        await session.async_send_text(text + "\r")
+        return web.Response(status=204)
+
     async def new(_, body):
         if body.get("root") not in {s["root"] for s in live}:
             raise web.HTTPBadRequest()
@@ -221,11 +276,13 @@ async def main(connection):
         await asyncio.to_thread(webbrowser.open, body["url"])
         return web.Response(status=204)
 
-    server = web.Application()
+    server = web.Application(middlewares=[protect])
     server.add_routes([
         web.get("/", lambda _: web.FileResponse(STATIC / "index.html")),
         web.get("/api/sessions", sessions),
         web.post("/api/focus", guarded(focus)),
+        web.get("/api/peek", peek),
+        web.post("/api/send", guarded(send)),
         web.post("/api/rename", guarded(rename)),
         web.post("/api/new", guarded(new)),
         web.post("/api/resume", guarded(resume)),

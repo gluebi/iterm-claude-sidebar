@@ -5,8 +5,8 @@
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Claude Sessions</title>
 <style>
-  :root { --bg:#fff; --fg:#1d1d1f; --muted:#6e6e73; --hover:#f0f0f3; --line:#d9d9de; --busy:#0a6cff; --waiting:#b36b00; --done:#1a7f37; --failed:#cf222e; color-scheme: light dark; }
-  @media (prefers-color-scheme: dark) { :root { --bg:#1e1e1e; --fg:#f2f2f7; --muted:#a1a1a6; --hover:#2c2c2e; --line:#3a3a3c; --busy:#4d9aff; --waiting:#f0a63a; --done:#3fb950; --failed:#ff6b6b; } }
+  :root { --bg:#fff; --fg:#1d1d1f; --muted:#6e6e73; --hover:#f0f0f3; --line:#d9d9de; --busy:#0a6cff; --waiting:#b36b00; --done:#1a7f37; --failed:#cf222e; --card:#fff; --shadow:0 10px 30px rgba(0,0,0,.18), 0 2px 6px rgba(0,0,0,.08); color-scheme: light dark; }
+  @media (prefers-color-scheme: dark) { :root { --bg:#1e1e1e; --fg:#f2f2f7; --muted:#a1a1a6; --hover:#2c2c2e; --line:#3a3a3c; --busy:#4d9aff; --waiting:#f0a63a; --done:#3fb950; --failed:#ff6b6b; --card:#2b2b2e; --shadow:0 10px 30px rgba(0,0,0,.55), 0 0 0 1px rgba(255,255,255,.05); } }
   body { margin:0; padding:8px; display:flex; flex-direction:column; min-height:100vh; box-sizing:border-box; background:var(--bg); color:var(--fg); font:13px/1.35 -apple-system, system-ui, sans-serif; }
   .tools { display:flex; gap:6px; position:sticky; top:0; background:var(--bg); padding-bottom:6px; }
   input, select { min-width:0; padding:4px 6px; border:1px solid var(--line); border-radius:6px; background:var(--bg); color:var(--fg); font:inherit; }
@@ -39,8 +39,43 @@
   .limit.stale { opacity:.55; }
   .item { position:relative; }
   .edit { position:absolute; top:5px; right:4px; opacity:0; }
-  .item:hover .edit, .edit:focus-visible { opacity:1; } .item:hover .new { visibility:hidden; }
-  input.rename { all:unset; box-sizing:border-box; flex:1; min-width:0; padding:1px 4px; border:1px solid var(--busy); border-radius:4px; background:var(--bg); color:var(--fg); }
+  .peek-btn { position:absolute; top:5px; right:26px; opacity:0; }
+  .item:hover .edit, .edit:focus-visible, .item:hover .peek-btn, .peek-btn:focus-visible, .peek-btn[aria-expanded=true] { opacity:1; } .item:hover .new { visibility:hidden; }
+  input.field { all:unset; box-sizing:border-box; flex:1; min-width:0; padding:1px 4px; border:1px solid var(--busy); border-radius:4px; background:var(--bg); color:var(--fg); }
+  .item.peeked > .row { background:var(--hover); }
+  .peek { position:absolute; z-index:20; left:-2px; right:-2px; top:calc(100% + 2px); display:grid; grid-template-columns:minmax(0, 1fr); gap:8px; padding:10px; background:var(--card); border:1px solid var(--line); border-radius:12px; box-shadow:var(--shadow); transform-origin:50% 0; }
+  .peek.flip { top:auto; bottom:calc(100% + 2px); transform-origin:50% 100%; }
+  .peek.enter { animation:peek-in .18s cubic-bezier(.2,.8,.2,1) both; } .peek.flip.enter { animation-name:peek-in-up; }
+  .peek.leave { animation:peek-out .14s ease-in both; pointer-events:none; } .peek.flip.leave { animation-name:peek-out-up; }
+  @keyframes peek-in { from { opacity:0; transform:translateY(-8px) scale(.96); } }
+  @keyframes peek-in-up { from { opacity:0; transform:translateY(8px) scale(.96); } }
+  @keyframes peek-out { to { opacity:0; transform:translateY(-8px) scale(.96); } }
+  @keyframes peek-out-up { to { opacity:0; transform:translateY(8px) scale(.96); } }
+  @media (prefers-reduced-motion: reduce) { .peek.enter, .peek.leave { animation:none; } }
+  .peek-head { display:flex; align-items:center; gap:8px; }
+  .peek-title { flex:1; min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; color:var(--muted); font-size:11px; }
+  .seg-group { display:flex; padding:2px; border-radius:8px; background:var(--hover); }
+  .seg { all:unset; cursor:pointer; padding:2px 9px; border-radius:6px; font-size:11px; color:var(--muted); }
+  .seg[aria-pressed=true] { background:var(--card); color:var(--fg); box-shadow:0 1px 2px rgba(0,0,0,.18); }
+  .seg:focus-visible { outline:2px solid var(--busy); }
+  .peek-body { box-sizing:border-box; max-height:min(260px, 40vh); overflow:auto; border-radius:8px; background:var(--hover); padding:8px; font:11px/1.4 ui-monospace, SFMono-Regular, Menlo, monospace; white-space:pre-wrap; overflow-wrap:anywhere; }
+  .peek-body.screen { white-space:pre; overflow-wrap:normal; }
+  .peek-body.transcript { font:12px/1.4 -apple-system, system-ui, sans-serif; }
+  .msg { margin-bottom:8px; } .msg:last-child { margin-bottom:0; }
+  .msg .who { display:block; font-size:10px; text-transform:uppercase; letter-spacing:.06em; color:var(--muted); }
+  .msg.user .who { color:var(--busy); } .msg.assistant .who { color:var(--done); }
+  .msg .line { white-space:pre-wrap; } .msg .tool { color:var(--muted); font:11px/1.4 ui-monospace, SFMono-Regular, Menlo, monospace; }
+  .composer { display:flex; align-items:center; gap:6px; padding:4px 4px 4px 12px; border:1px solid var(--line); border-radius:999px; background:var(--bg); }
+  .composer:focus-within { border-color:var(--busy); box-shadow:0 0 0 3px color-mix(in srgb, var(--busy) 25%, transparent); }
+  .composer-input { all:unset; flex:1; min-width:0; color:var(--fg); } .composer-input::placeholder { color:var(--muted); }
+  .send-btn { all:unset; cursor:pointer; flex:none; width:24px; height:24px; border-radius:50%; background:var(--busy); color:#fff; text-align:center; line-height:24px; font-weight:700; }
+  .send-btn:hover { filter:brightness(1.12); } .send-btn:focus-visible { outline:2px solid var(--fg); outline-offset:1px; }
+  .actions { display:flex; align-items:center; gap:6px; }
+  .pill { all:unset; cursor:pointer; padding:3px 10px; border:1px solid var(--line); border-radius:999px; font-size:11px; }
+  .pill:hover, .pill:focus-visible { background:var(--hover); } .pill:focus-visible { outline:2px solid var(--busy); }
+  .pill[data-armed] { border-color:var(--failed); color:var(--failed); }
+  .hint { margin-left:auto; min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; color:var(--muted); font-size:10px; }
+  .send-note { font-size:11px; color:var(--waiting); } .send-note.error { color:var(--failed); }
   .empty { color:var(--muted); padding:8px; } .err { color:var(--failed); padding:4px; }
   details { margin-top:14px; } summary { cursor:pointer; color:var(--muted); font-size:11px; text-transform:uppercase; letter-spacing:.06em; padding:0 4px; }
 </style>
@@ -70,6 +105,7 @@ function build(tag, props, kids = []) {
 }
 const toggle = (set, name, storeKey) => { set.has(name) ? set.delete(name) : set.add(name); store.set(storeKey, [...set]); render(); };
 const ago = ms => { const s = Math.max(0, (Date.now() - ms) / 1000 | 0); return s < 60 ? s + 's' : s < 3600 ? (s / 60 | 0) + 'm' : s < 86400 ? (s / 3600 | 0) + 'h' : (s / 86400 | 0) + 'd'; };
+const get = path => fetch(path, { headers: { 'X-Sidebar': '1' } });
 const post = (path, body) => fetch(path, { method: 'POST', headers: { 'X-Sidebar': '1', 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
 
 let pinned = new Set(store.get('pinned', []));
@@ -80,11 +116,127 @@ $('#filter').value = store.get('filter', '');
 let data = { groups: [], closed: [] };
 
 let editing = false;  // pauses re-rendering so the input isn't destroyed mid-edit
+let peeking = null, peekMode = 'transcript', peekPayload = null, peekSig = '', peekStick = true, peekBusy = false, peekEnter = false, closing = false, sendText = '', sendNote = null;
+const reduceMotion = matchMedia('(prefers-reduced-motion: reduce)').matches;
+
+function renderNote() {
+  const el = document.querySelector('[data-testid="send-note"]');
+  if (!el) return;
+  el.className = 'send-note' + (sendNote?.kind === 'error' ? ' error' : '');
+  el.replaceChildren(...[sendNote && sendNote.text, sendNote?.retry && build('button', { className: 'chip', textContent: 'Send anyway', onclick: sendNote.retry })].filter(Boolean));
+}
+
+async function sendTo(s, payload) {
+  const r = await post('/api/send', { id: s.id, ...payload });
+  if (r.ok) {
+    sendNote = { text: 'Sent' };
+    if (payload.text) { sendText = ''; const input = document.querySelector('[data-testid="send-input"]'); if (input) input.value = ''; }
+    peekTick();
+  } else if (r.status === 409) {
+    sendNote = { kind: 'error', text: (await r.json()).detail, retry: () => sendTo(s, { ...payload, force: true }) };
+  } else {
+    sendNote = { kind: 'error', text: r.status === 404 ? 'Session is not open in iTerm' : 'Could not send' };
+  }
+  renderNote();
+}
+
+function fillBody(body, payload) {
+  body.className = 'peek-body ' + peekMode;
+  if (peekMode === 'screen') { body.textContent = payload.lines.join('\n'); return; }
+  const items = payload.items.length ? payload.items : [{ role: 'note', text: 'No messages yet.' }];
+  body.replaceChildren(...items.map(i => build('div', { className: 'msg ' + i.role }, [
+    build('span', { className: 'who', textContent: i.role === 'user' ? 'you' : i.role === 'assistant' ? 'claude' : '' }),
+    ...i.text.split('\n').map(line => build('div', { className: line.startsWith('▸ ') ? 'tool' : 'line', textContent: line })),
+  ])));
+}
+
+async function peekTick() {
+  if (!peeking || peekBusy || closing) return;
+  peekBusy = true;
+  const id = peeking, mode = peekMode;
+  try {
+    const r = await get(`/api/peek?id=${encodeURIComponent(id)}&mode=${mode}`);
+    const payload = r.ok ? await r.json() : { items: [], lines: [r.status === 404 && mode === 'screen' ? 'Not open in iTerm.' : 'Unavailable.'] };
+    const sig = mode + JSON.stringify(payload), body = document.querySelector('[data-testid="peek-body"]');
+    if (id === peeking && mode === peekMode && sig !== peekSig) {
+      peekSig = sig; peekPayload = payload;
+      if (body) { fillBody(body, payload); placePeek(); if (peekStick) body.scrollTop = body.scrollHeight; }
+    }
+  } finally { peekBusy = false; }
+}
+
+function placePeek() {
+  const card = document.querySelector('.peek');
+  if (!card) return;
+  const body = card.querySelector('.peek-body');
+  card.classList.remove('flip'); body.style.maxHeight = '';
+  const anchor = card.parentElement.getBoundingClientRect();
+  const below = innerHeight - anchor.bottom - 12, above = anchor.top - 12;
+  const flip = card.getBoundingClientRect().bottom > innerHeight - 8 && above > below;  // open upwards when the other side has more room
+  card.classList.toggle('flip', flip);
+  const room = flip ? above : below;
+  if (card.offsetHeight > room) body.style.maxHeight = Math.max(40, room - (card.offsetHeight - body.offsetHeight)) + 'px';
+}
+
+function openPeek(id) {
+  peeking = id; peekPayload = null; peekSig = ''; peekStick = true; sendNote = null; closing = false;
+  peekEnter = !reduceMotion;
+  render(); peekTick();
+}
+
+function closePeek() {
+  if (!peeking || closing) return;
+  const id = peeking, card = document.querySelector('.peek'), refocus = card?.contains(document.activeElement);
+  const finish = () => { if (!closing && card && !reduceMotion) return; peeking = null; closing = false; render(); if (refocus) document.querySelector(`[data-key="v${id}"]`)?.focus(); };
+  if (!card || reduceMotion) return finish();
+  closing = true;
+  card.classList.remove('enter'); card.classList.add('leave');
+  card.addEventListener('animationend', e => { if (e.target === card) finish(); });
+  setTimeout(() => closing && finish(), 300);
+}
+
+function peekPanel(s) {
+  const body = build('div', { className: 'peek-body ' + peekMode, testid: 'peek-body', tabIndex: 0, 'aria-label': `${peekMode} of ${s.name}` });
+  if (peekPayload) fillBody(body, peekPayload); else body.textContent = 'Loading…';
+  body.onscroll = () => { peekStick = body.scrollHeight - body.scrollTop - body.clientHeight < 8; };
+  const seg = (mode, label) => build('button', { className: 'seg', textContent: label, 'aria-pressed': String(peekMode === mode), testid: 'peek-tab-' + mode,
+    onclick: () => { peekMode = mode; peekPayload = null; peekSig = ''; peekStick = true; render(); peekTick(); } });
+  const input = build('input', { className: 'composer-input', value: sendText, maxLength: 2000, testid: 'send-input', 'aria-label': `Send a message to ${s.name}`,
+    placeholder: s.state === 'busy' ? 'Send (will queue)…' : 'Send a message…' });
+  input.oninput = () => { sendText = input.value; };
+  const action = (label, payload, title, confirm) => {
+    const btn = build('button', { className: 'pill', type: 'button', textContent: label, title, testid: 'send-quick' });
+    let timer;
+    btn.onclick = () => {
+      if (!confirm || btn.dataset.armed) { clearTimeout(timer); delete btn.dataset.armed; btn.textContent = label; sendTo(s, payload); return; }
+      btn.dataset.armed = '1'; btn.textContent = `Confirm ${label}?`;
+      timer = setTimeout(() => { delete btn.dataset.armed; btn.textContent = label; }, 3000);
+    };
+    return btn;
+  };
+  return build('div', { className: 'peek' + (peekEnter ? ' enter' : ''), role: 'dialog', 'aria-label': `Peek at ${s.name}`, testid: 'peek' }, [
+    build('div', { className: 'peek-head' }, [
+      build('div', { className: 'seg-group', role: 'group', 'aria-label': 'View' }, [seg('transcript', 'Transcript'), seg('screen', 'Screen')]),
+      build('span', { className: 'peek-title', textContent: s.name }),
+      build('button', { className: 'icon', textContent: '✕', title: 'Close (Esc)', 'aria-label': 'Close peek', testid: 'peek-close', onclick: closePeek }),
+    ]),
+    body,
+    build('form', { className: 'composer', onsubmit: e => { e.preventDefault(); if (input.value.trim()) sendTo(s, { text: input.value }); } }, [
+      input, build('button', { className: 'send-btn', type: 'submit', textContent: '↑', title: 'Send (Enter)', 'aria-label': 'Send', testid: 'send-submit' }),
+    ]),
+    build('div', { className: 'actions' }, [
+      action('⎋ Interrupt', { key: 'esc' }, 'Send Esc to interrupt the session'),
+      action('/clear', { text: '/clear' }, 'Clear the conversation', true),
+      build('span', { className: 'hint', textContent: '↵ send · esc close' }),
+    ]),
+    build('div', { className: 'send-note', testid: 'send-note', role: 'status' }),
+  ]);
+}
 
 function startRename(s, row) {
   if (editing) return;
   editing = true;
-  const input = build('input', { className: 'rename', value: s.name, placeholder: s.auto, maxLength: 80, testid: 'session-rename-input', 'aria-label': `New name for ${s.auto} (empty resets)` });
+  const input = build('input', { className: 'field', value: s.name, placeholder: s.auto, maxLength: 80, testid: 'session-rename-input', 'aria-label': `New name for ${s.auto} (empty resets)` });
   const finish = async save => {
     if (!editing) return;
     editing = false;
@@ -113,12 +265,15 @@ function sessionRow(s) {
     s.unseen && build('span', { className: 'new', textContent: 'new' }),
   ]);
   b.onkeydown = e => { if (e.key === 'F2') { e.preventDefault(); startRename(s, b); } };
-  return build('div', { className: 'item' }, [
+  return build('div', { className: 'item' + (peeking === s.id ? ' peeked' : '') }, [
     b,
+    build('button', { className: 'icon peek-btn', textContent: '👁', key: 'v' + s.id, title: 'Peek and send', 'aria-label': `Peek at ${s.name}`, 'aria-expanded': String(peeking === s.id), testid: 'session-peek',
+      onclick: () => peeking === s.id ? closePeek() : openPeek(s.id) }),
     build('button', { className: 'icon edit', textContent: '✎', key: 'e' + s.id, title: 'Rename (F2)', 'aria-label': `Rename ${s.name}`, testid: 'session-rename', onclick: () => startRename(s, b) }),
     s.pr && build('div', { className: 'meta', style: 'padding:0 8px 4px 25px' }, [
       build('button', { className: 'chip', key: 'c' + s.id, textContent: `PR #${s.pr.number}${s.pr.isDraft ? ' draft' : ''} · ${s.pr.state.toLowerCase()}`, onclick: () => post('/api/open-pr', { url: s.pr.url }) }),
     ]),
+    peeking === s.id && peekPanel(s),
   ]);
 }
 
@@ -128,6 +283,7 @@ function render() {
     && !(hideH && s.state === 'idle' && !s.unseen && Date.now() - s.since > hideH * 3600e3);
   const groups = data.groups.map(g => ({ ...g, sessions: g.sessions.filter(visible) })).filter(g => g.sessions.length)
     .sort((a, b) => pinned.has(b.project) - pinned.has(a.project) || a.project.localeCompare(b.project));
+  if (peeking && !data.groups.some(g => g.sessions.some(s => s.id === peeking))) peeking = null;
   const open = $('#closed')?.open;
   const key = document.hasFocus() ? document.activeElement?.dataset.key : null;  // never refocus: it steals keyboard focus from the terminal
   $('#list').replaceChildren(...[
@@ -157,6 +313,11 @@ function render() {
   ].filter(Boolean));
   if (key) document.querySelector(`[data-key="${CSS.escape(key)}"]`)?.focus();
   renderLimits();
+  const pre = document.querySelector('[data-testid="peek-body"]');
+  if (pre && peekStick) pre.scrollTop = pre.scrollHeight;
+  renderNote();
+  placePeek();
+  peekEnter = false;
 }
 
 const fmtReset = (epoch, long) => new Date(epoch * 1000).toLocaleString([], long ? { weekday: 'short', hour: '2-digit', minute: '2-digit' } : { hour: '2-digit', minute: '2-digit' });
@@ -182,17 +343,22 @@ function renderLimits() {
 let sig = '', last = 0, version;
 async function refresh() {
   try {
-    data = await (await fetch('/api/sessions')).json();
+    data = await (await get('/api/sessions')).json();
     if (version && data.version !== version) return location.reload();  // UI file changed: toolbelt web views never reload on their own
     version = data.version;
     const now = JSON.stringify(data);
-    if (!editing && (now !== sig || Date.now() - last > 10000)) { sig = now; last = Date.now(); render(); }
+    const typing = document.activeElement?.tagName === 'INPUT' && $('#list').contains(document.activeElement);
+    if (!editing && !typing && !closing && (now !== sig || Date.now() - last > 10000)) { sig = now; last = Date.now(); render(); }
   }
   catch { $('#list').replaceChildren(build('div', { className: 'err', textContent: 'sidebar daemon unreachable' })); }
 }
 $('#filter').oninput = () => { store.set('filter', $('#filter').value); render(); };
 $('#hide').onchange = () => { store.set('hide', $('#hide').value); render(); };
-refresh(); setInterval(refresh, 1000);
+document.addEventListener('click', e => { if (peeking && !e.target.closest('.peek, [data-testid="session-peek"]')) closePeek(); });
+addEventListener('resize', placePeek);
+addEventListener('scroll', placePeek, { passive: true });
+document.addEventListener('keydown', e => { if (e.key === 'Escape' && peeking) closePeek(); });
+refresh(); setInterval(refresh, 1000); setInterval(peekTick, 1000);
 </script>
 </body>
 </html>

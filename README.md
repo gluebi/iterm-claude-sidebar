@@ -9,6 +9,7 @@ An iTerm2 toolbelt panel that lists your open [Claude Code](https://claude.com/c
 - Branch, Jira-style key, PR (via `gh`, cached 2 min), context usage %, time in state
 - Filter, collapsible and pinnable projects, hide old done sessions, `+` starts `claude` in the project root
 - Rename sessions in the sidebar (✎ or F2; empty resets): an alias stored by the sidebar, Claude and the tab titles keep the original name
+- Peek (👁): a floating card with the session's transcript or live screen, plus a message box, Interrupt (Esc) and `/clear` (asks twice). Sending never focuses the session; it asks first if the session is waiting for input or you have unsent text at its prompt (single-line messages only)
 - Recently closed sessions (last 15) with `claude --resume`
 - Status bar component and a `claude_next_waiting()` function you can bind to a key
 
