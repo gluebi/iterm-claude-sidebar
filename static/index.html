@@ -135,18 +135,18 @@ function render() {
 const fmtReset = (epoch, long) => new Date(epoch * 1000).toLocaleString([], long ? { weekday: 'short', hour: '2-digit', minute: '2-digit' } : { hour: '2-digit', minute: '2-digit' });
 
 function renderLimits() {
-  const rows = [['5h', 'five_hour', false], ['7d', 'seven_day', true]].flatMap(([label, key, long]) => {
+  const rows = [['5h', 'five_hour'], ['7d', 'seven_day']].flatMap(([label, key]) => {
     const w = data.limits?.[key];
     if (!w) return [];
-    const stale = w.resets_at * 1000 < Date.now();  // window has rolled over; value updates with the next response
     const pct = Math.round(w.pct), level = pct >= 90 ? 'high' : pct >= 70 ? 'warn' : '';
-    const text = stale ? `${label} window reset` : `${pct}% used, resets ${fmtReset(w.resets_at, long)}`;
-    return [build('div', { className: `limit ${level} ${stale ? 'stale' : ''}`, testid: 'limit-' + key, role: 'meter', 'aria-label': `${label} usage limit`,
+    const reset = w.stale ? 'resets after next response' : '↻ ' + fmtReset(w.resets_at, key === 'seven_day');  // stale: window rolled over, value updates with the next response
+    const text = w.stale ? `${label} window reset` : `${pct}% used, resets ${reset.slice(2)}`;
+    return [build('div', { className: `limit ${level} ${w.stale ? 'stale' : ''}`, testid: 'limit-' + key, role: 'meter', 'aria-label': `${label} usage limit`,
       'aria-valuemin': 0, 'aria-valuemax': 100, 'aria-valuenow': pct, 'aria-valuetext': text, title: text }, [
       build('span', { textContent: label }),
       build('div', { className: 'track' }, [build('div', { className: 'fill', style: `width:${Math.min(pct, 100)}%` })]),
-      build('span', { className: 'pct', textContent: stale ? '–' : pct + '%' }),
-      build('span', { className: 'reset', textContent: stale ? 'resets after next response' : '↻ ' + fmtReset(w.resets_at, long) }),
+      build('span', { className: 'pct', textContent: w.stale ? '–' : pct + '%' }),
+      build('span', { className: 'reset', textContent: reset }),
     ])];
   });
   $('#limits').replaceChildren(...rows);

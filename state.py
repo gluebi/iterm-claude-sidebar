@@ -27,9 +27,10 @@ def ttl_cache(seconds):
             hit = store.get(args)
             if hit and time.monotonic() - hit[0] < seconds:
                 return hit[1]
-            if len(store) > 256:  # keys are never reused for long; bound the growth
-                store.clear()
-            store[args] = (time.monotonic(), fn(*args))
+            now = time.monotonic()
+            for stale in [k for k, (at, _) in store.items() if now - at >= seconds]:  # bound the growth
+                del store[stale]
+            store[args] = (now, fn(*args))
             return store[args][1]
         return inner
     return wrap
@@ -87,16 +88,16 @@ def context_tokens(session_id: str) -> int:
 def alive(pid: int) -> bool:
     try:
         os.kill(pid, 0)
-        return True
     except ProcessLookupError:
         return False
     except PermissionError:
-        return True
+        pass
+    return True
 
 
 def load() -> list[dict]:
     out = []
-    ids = set()
+    failed = {p.name for p in FAILED.glob("*")}
     for f in SESSIONS.glob("*.json"):
         try:
             d = json.loads(f.read_text())
@@ -104,28 +105,31 @@ def load() -> list[dict]:
             continue
         if d.get("kind") != "interactive" or not alive(d["pid"]):
             continue
-        ids.add(d["sessionId"])
-        state = state_of(d.get("status", "idle"), (FAILED / d["sessionId"]).exists())
+        state = state_of(d.get("status", "idle"), d["sessionId"] in failed)
         branch = branch_of(d["cwd"])
         root = root_of(d["cwd"])
         out.append({
             "id": d["sessionId"], "pid": d["pid"], "name": d.get("name") or Path(d["cwd"]).name,
-            "cwd": d["cwd"], "root": str(root), "project": re.sub(r"-\d+$", "", root.name),
+            "cwd": d["cwd"], "root": str(root), "project": project_of(d["cwd"]),
             "branch": branch, "jira": jira_key(branch), "ctx": round(100 * context_tokens(d["sessionId"]) / CONTEXT_WINDOW),
             "state": state, "label": LABELS[state], "since": d.get("statusUpdatedAt") or d.get("updatedAt"),
         })
-    for marker in FAILED.glob("*"):  # drop markers of sessions that no longer exist
-        if marker.name not in ids:
-            marker.unlink(missing_ok=True)
+    for name in failed - {s["id"] for s in out}:  # drop markers of sessions that no longer exist
+        (FAILED / name).unlink(missing_ok=True)
     return out
 
 
-def limits() -> dict:
-    """{"five_hour": {"pct", "resets_at"}, "seven_day": {...}}; empty until a status line has published them."""
+def read_windows() -> dict:
+    """{"five_hour": {"pct", "resets_at"}, "seven_day": {...}} as published by statusline-tap.py; empty until then."""
     try:
         return json.loads(RATE_FILE.read_text())["windows"]
     except (OSError, ValueError, KeyError):
         return {}
+
+
+def limits() -> dict:
+    """The windows plus `stale`: the window has rolled over since the reading."""
+    return {k: w | {"stale": (w.get("resets_at") or 0) < time.time()} for k, w in read_windows().items()}
 
 
 def grouped(sessions: list[dict]) -> list[dict]:

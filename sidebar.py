@@ -44,6 +44,15 @@ async def run(*cmd, cwd=None):
         return ""
 
 
+background: set[asyncio.Task] = set()
+
+
+def spawn(coro):
+    task = asyncio.create_task(coro)  # keep a reference so it isn't collected mid-run
+    background.add(task)
+    task.add_done_callback(background.discard)
+
+
 async def notify(title, text):
     esc = lambda t: json.dumps(t, ensure_ascii=False)
     await run("osascript", "-e", f"display notification {esc(text)} with title {esc(title)}")
@@ -97,13 +106,13 @@ async def monitor(app):
             old = prev.get(sid)
             if old and old["state"] != s["state"] and focus != sid:
                 if s["state"] in state.NEEDS_ATTENTION:
-                    await notify(f"Claude {s['label']}: {s['project']}", s["name"])
+                    spawn(notify(f"Claude {s['label']}: {s['project']}", s["name"]))
                 elif s["state"] == "idle":
                     unseen.add(sid)
             checked, pr = prs.get(pr_key(s), (0, None))
             if s["branch"] not in ("", "master", "main") and time.time() - checked > 120:
                 prs[pr_key(s)] = (time.time(), pr)  # claim the slot before the slow gh call
-                asyncio.create_task(refresh_pr(s))
+                spawn(refresh_pr(s))
         for key in prs.keys() - {pr_key(s) for s in live}:
             del prs[key]
         if focus:
@@ -179,7 +188,7 @@ async def main(connection):
     async def open_pr(_, body):
         if body.get("url") not in {pr["url"] for _, pr in prs.values() if pr}:
             raise web.HTTPBadRequest()
-        webbrowser.open(body["url"])
+        await asyncio.to_thread(webbrowser.open, body["url"])
         return web.Response(status=204)
 
     server = web.Application()

@@ -9,32 +9,36 @@ import json
 import os
 import subprocess
 import sys
-import time
-from pathlib import Path
 
-RATE_FILE = Path(os.environ.get("CLAUDE_RATE_LIMITS_FILE", Path.home() / ".claude" / "rate-limits.json"))
+
+def rank(window):
+    return (window.get("resets_at") or 0, window.get("pct") or 0)
 
 
 def publish(payload):
-    limits = payload.get("rate_limits") or {}
-    new = {k: {"pct": limits[k]["used_percentage"], "resets_at": limits[k].get("resets_at")} for k in ("five_hour", "seven_day") if k in limits}
-    if not new:
-        return
-    try:
-        old = json.loads(RATE_FILE.read_text())["windows"]
-    except (OSError, ValueError, KeyError):
-        old = {}
-    # a session idle since before the last reset must not overwrite a newer reading
-    if any((old.get(k, {}).get("resets_at") or 0, old.get(k, {}).get("pct") or 0) > (v["resets_at"] or 0, v["pct"]) for k, v in new.items()):
+    from state import RATE_FILE, read_windows  # inside the guarded path: an import error must not stop the real status line
+
+    given = payload.get("rate_limits") or {}
+    new = {k: {"pct": given[k]["used_percentage"], "resets_at": given[k].get("resets_at")} for k in ("five_hour", "seven_day") if k in given}
+    old = read_windows()
+    # skip no-ops, and never let a session idle since before the last reset overwrite a newer reading
+    if not new or all(old.get(k) == v for k, v in new.items()) or any(rank(old.get(k, {})) > rank(v) for k, v in new.items()):
         return
     tmp = RATE_FILE.with_name(f"{RATE_FILE.name}.{os.getpid()}")
-    tmp.write_text(json.dumps({"windows": {**old, **new}, "updated": time.time()}))
-    os.replace(tmp, RATE_FILE)
+    try:
+        tmp.write_text(json.dumps({"windows": {**old, **new}}))
+        os.replace(tmp, RATE_FILE)
+    finally:
+        tmp.unlink(missing_ok=True)
 
 
 raw = sys.stdin.buffer.read()
+child = subprocess.Popen(sys.argv[1:], stdin=subprocess.PIPE) if sys.argv[1:] else None
+if child:  # start the real status line first so publishing overlaps with it
+    child.stdin.write(raw)
+    child.stdin.close()
 try:
     publish(json.loads(raw))
 except Exception:
     pass
-sys.exit(subprocess.run(sys.argv[1:], input=raw).returncode if sys.argv[1:] else 0)
+sys.exit(child.wait() if child else 0)
