@@ -82,7 +82,9 @@
   .chip { color:inherit; }
   @media (min-width: 720px) {
     body { padding:16px 24px; }
-    .tools, footer { max-width:480px; }
+    .tools { max-width:480px; }
+    footer { grid-template-columns:repeat(auto-fit, minmax(280px, 1fr)); gap:4px 32px; }  /* full width: the 5h and 7d meters sit side by side */
+    body:has(.peek) footer { margin-right:calc(var(--peek-w, min(520px, 42vw)) + 28px); }  /* stay left of the docked panel */
     main { display:grid; grid-template-columns:repeat(auto-fit, minmax(min(100%, 340px), 1fr)); gap:16px; align-content:start; }  /* auto-fit: columns without a card collapse, so cards stretch to the full width */
     .items { display:grid; grid-template-columns:repeat(auto-fill, minmax(min(100%, 300px), 1fr)); column-gap:12px; }  /* a wide card flows its sessions into columns */
     .group { align-self:start; padding:2px 8px 8px; border:1px solid var(--line); border-radius:12px; background:var(--card); }
