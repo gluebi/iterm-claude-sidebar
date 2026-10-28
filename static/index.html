@@ -1,0 +1,131 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Claude Sessions</title>
+<style>
+  :root { --bg:#fff; --fg:#1d1d1f; --muted:#6e6e73; --hover:#f0f0f3; --line:#d9d9de; --busy:#0a6cff; --waiting:#b36b00; --done:#1a7f37; --failed:#cf222e; color-scheme: light dark; }
+  @media (prefers-color-scheme: dark) { :root { --bg:#1e1e1e; --fg:#f2f2f7; --muted:#a1a1a6; --hover:#2c2c2e; --line:#3a3a3c; --busy:#4d9aff; --waiting:#f0a63a; --done:#3fb950; --failed:#ff6b6b; } }
+  body { margin:0; padding:8px; background:var(--bg); color:var(--fg); font:13px/1.35 -apple-system, system-ui, sans-serif; }
+  .tools { display:flex; gap:6px; position:sticky; top:0; background:var(--bg); padding-bottom:6px; }
+  input, select { min-width:0; padding:4px 6px; border:1px solid var(--line); border-radius:6px; background:var(--bg); color:var(--fg); font:inherit; }
+  input { flex:1; }
+  header { display:flex; align-items:center; margin:12px 0 2px; }
+  h2 { flex:1; margin:0; min-width:0; font-size:11px; text-transform:uppercase; letter-spacing:.06em; color:var(--muted); }
+  .fold { all:unset; display:flex; align-items:center; gap:6px; cursor:pointer; border-radius:4px; padding:2px 4px; }
+  .fold:hover, .fold:focus-visible { background:var(--hover); } .fold:focus-visible { outline:2px solid var(--busy); }
+  .dots { display:flex; gap:3px; } .dots .dot { margin-top:0; width:7px; height:7px; }
+  .icon { all:unset; cursor:pointer; padding:2px 6px; border-radius:4px; color:var(--muted); }
+  .icon:hover, .icon:focus-visible { background:var(--hover); color:var(--fg); }
+  .icon[aria-pressed=true] { color:var(--busy); }
+  .row { all:unset; box-sizing:border-box; display:flex; width:100%; gap:8px; align-items:flex-start; padding:6px 8px; border-radius:6px; cursor:pointer; }
+  .row:hover, .row:focus-visible { background:var(--hover); }
+  .row:focus-visible, .icon:focus-visible { outline:2px solid var(--busy); }
+  .dot { flex:none; width:9px; height:9px; margin-top:4px; border-radius:50%; background:var(--c); }
+  .busy { --c:var(--busy); animation:pulse 1.4s ease-in-out infinite; } .waiting { --c:var(--waiting); } .idle { --c:var(--done); } .failed { --c:var(--failed); }
+  @media (prefers-reduced-motion: reduce) { .busy { animation:none; } }
+  @keyframes pulse { 50% { opacity:.35; } }
+  .body { min-width:0; flex:1; } .name { overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+  .meta { color:var(--muted); font-size:11px; display:flex; flex-wrap:wrap; gap:2px 8px; }
+  .new { background:var(--done); color:#fff; border-radius:8px; padding:0 6px; font-size:10px; align-self:center; }
+  .chip { all:unset; cursor:pointer; text-decoration:underline; } .chip:focus-visible { outline:2px solid var(--busy); }
+  .empty { color:var(--muted); padding:8px; } .err { color:var(--failed); padding:4px; }
+  details { margin-top:14px; } summary { cursor:pointer; color:var(--muted); font-size:11px; text-transform:uppercase; letter-spacing:.06em; padding:0 4px; }
+</style>
+</head>
+<body>
+<div class="tools">
+  <input id="filter" type="search" placeholder="Filter…" aria-label="Filter sessions" data-testid="sidebar-filter">
+  <select id="hide" aria-label="Hide done sessions older than" data-testid="sidebar-hide-idle">
+    <option value="0">All</option><option value="1">&lt; 1h</option><option value="4">&lt; 4h</option><option value="24">&lt; 24h</option>
+  </select>
+</div>
+<main id="list" data-testid="sidebar-list" aria-live="polite"></main>
+<script>
+const $ = s => document.querySelector(s);
+const store = {
+  get: (k, d) => { try { return JSON.parse(localStorage.getItem(k)) ?? d; } catch { return d; } },
+  set: (k, v) => { try { localStorage.setItem(k, JSON.stringify(v)); } catch {} },
+};
+function build(tag, props, kids = []) { const { key, ...rest } = props; const e = document.createElement(tag);
+  for (const [k, v] of Object.entries(rest)) k.startsWith('aria-') ? e.setAttribute(k, v) : (e[k] = v); if (key) e.dataset.key = key; e.append(...kids.filter(Boolean)); return e; }
+const ago = ms => { const s = Math.max(0, (Date.now() - ms) / 1000 | 0); return s < 60 ? s + 's' : s < 3600 ? (s / 60 | 0) + 'm' : s < 86400 ? (s / 3600 | 0) + 'h' : (s / 86400 | 0) + 'd'; };
+const post = (path, body) => fetch(path, { method: 'POST', headers: { 'X-Sidebar': '1', 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
+
+let pinned = new Set(store.get('pinned', []));
+let collapsed = new Set(store.get('collapsed', []));
+const isCollapsed = g => collapsed.has(g.project) && !$('#filter').value;
+$('#hide').value = store.get('hide', '0');
+$('#filter').value = store.get('filter', '');
+let data = { groups: [], closed: [] };
+
+function sessionRow(s) {
+  const b = build('button', { className: 'row', title: s.cwd,  onclick: e => { e.currentTarget.blur(); post('/api/focus', { id: s.id }); } }, [
+    build('span', { className: 'dot ' + s.state }),
+    build('span', { className: 'body' }, [
+      build('div', { className: 'name', textContent: s.name }),
+      build('div', { className: 'meta' }, [
+        build('span', { textContent: `${s.label} · ${ago(s.since)}` }),
+        s.ctx > 0 && build('span', { textContent: `ctx ${s.ctx}%`, title: 'context used (assumes 1M window)' }),
+        s.jira && build('span', { textContent: s.jira }),
+        s.branch && build('span', { textContent: s.branch, title: 'branch' }),
+      ]),
+    ].filter(Boolean)),
+    s.unseen && build('span', { className: 'new', textContent: 'new' }),
+  ].filter(Boolean));
+  b.dataset.testid = 'session-' + s.state; b.dataset.key = 's' + s.id;
+  b.setAttribute('aria-label', `${s.name}, ${s.label}${s.unseen ? ', unseen' : ''}`);
+  return s.pr ? build('div', {}, [b, build('div', { className: 'meta', style: 'padding:0 8px 4px 25px' }, [
+    build('button', { className: 'chip', key: 'c' + s.id, textContent: `PR #${s.pr.number}${s.pr.isDraft ? ' draft' : ''} · ${s.pr.state.toLowerCase()}`, onclick: () => post('/api/open-pr', { url: s.pr.url }) }),
+  ])]) : b;
+}
+
+function render() {
+  const q = $('#filter').value.toLowerCase(), hideH = +$('#hide').value;
+  const visible = s => (!q || [s.name, s.project, s.branch, s.jira].join(' ').toLowerCase().includes(q))
+    && !(hideH && s.state === 'idle' && !s.unseen && Date.now() - s.since > hideH * 3600e3);
+  const groups = data.groups.map(g => ({ ...g, sessions: g.sessions.filter(visible) })).filter(g => g.sessions.length)
+    .sort((a, b) => pinned.has(b.project) - pinned.has(a.project) || a.project.localeCompare(b.project));
+  const open = $('#closed')?.open;
+  const key = document.hasFocus() ? document.activeElement?.dataset?.key : null;  // never refocus: it steals keyboard focus from the terminal
+  $('#list').replaceChildren(...[
+    ...groups.flatMap(g => [
+      build('header', {}, [
+        build('h2', {}, [build('button', { className: 'fold', key: 'f' + g.project, 'aria-expanded': String(!isCollapsed(g)), title: isCollapsed(g) ? 'Expand' : 'Collapse',
+          onclick: () => { collapsed.has(g.project) ? collapsed.delete(g.project) : collapsed.add(g.project); store.set('collapsed', [...collapsed]); render(); } }, [
+          build('span', { textContent: isCollapsed(g) ? '▸' : '▾', 'aria-hidden': 'true' }),
+          build('span', { textContent: g.project }),
+          isCollapsed(g) && build('span', { className: 'dots' }, g.sessions.map(x => build('span', { className: 'dot ' + x.state, title: `${x.name}: ${x.label}` }))),
+        ].filter(Boolean))]),
+        Object.assign(build('button', { className: 'icon', textContent: '★', title: 'Pin project', key: 'p' + g.project,  onclick: () => { pinned.has(g.project) ? pinned.delete(g.project) : pinned.add(g.project); store.set('pinned', [...pinned]); render(); } }), { ariaPressed: String(pinned.has(g.project)) }),
+        build('button', { className: 'icon', textContent: '+', key: 'n' + g.project, title: `New Claude session in ${g.project}`, onclick: () => post('/api/new', { root: g.root }) }),
+      ]),
+      ...(isCollapsed(g) ? [] : g.sessions.map(sessionRow)),
+    ]),
+    !groups.length && build('div', { className: 'empty', textContent: 'No sessions' }),
+    data.closed.length ? Object.assign(build('details', { id: 'closed' }, [
+      build('summary', { textContent: 'Recently closed' }),
+      ...data.closed.map(c => build('button', { className: 'row', title: `claude --resume ${c.id}`, onclick: () => post('/api/resume', { id: c.id }) }, [
+        build('span', { className: 'body' }, [build('div', { className: 'name', textContent: c.name }), build('div', { className: 'meta', textContent: `${c.project} · closed ${ago(c.closedAt)} ago · resume` })]),
+      ])),
+    ]), { open }) : null,
+  ].filter(Boolean));
+  if (key) document.querySelector(`[data-key="${CSS.escape(key)}"]`)?.focus();
+}
+
+let sig = '', last = 0;
+async function refresh() {
+  try {
+    data = await (await fetch('/api/sessions')).json();
+    const now = JSON.stringify(data.groups.map(g => g.sessions.map(({ id, state, ctx, branch, pr, unseen, name }) => [id, state, ctx, branch, pr?.state, unseen, name])).concat(data.closed.length));
+    if (now !== sig || Date.now() - last > 10000) { sig = now; last = Date.now(); render(); }
+  }
+  catch { $('#list').replaceChildren(build('div', { className: 'err', textContent: 'sidebar daemon unreachable' })); }
+}
+$('#filter').oninput = () => { store.set('filter', $('#filter').value); render(); };
+$('#hide').onchange = () => { store.set('hide', $('#hide').value); render(); };
+refresh(); setInterval(refresh, 1000);
+</script>
+</body>
+</html>
