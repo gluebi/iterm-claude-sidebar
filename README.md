@@ -15,6 +15,7 @@ An iTerm2 toolbelt panel that lists your open [Claude Code](https://claude.com/c
 - Branch, Jira-style key, PR (via `gh`, cached 2 min), context usage %, time in state
 - Filter, collapsible and pinnable projects, hide old done sessions, `+` starts `claude` in the project root
 - Rename sessions in the sidebar (✎ or F2; empty resets): an alias stored by the sidebar, Claude and the tab titles keep the original name
+- Remote use behind a reverse proxy with a responsive dashboard layout (see below)
 - Peek (👁): a floating card with the session's transcript or live screen, plus a message box, Interrupt (Esc) and `/clear` (asks twice). Sending never focuses the session; it asks first if the session is waiting for input or you have unsent text at its prompt (single-line messages only)
 - Recently closed sessions (last 15) with `claude --resume`
 - Status bar component and a `claude_next_waiting()` function you can bind to a key
@@ -40,6 +41,24 @@ Claude Code only hands the plan limits to its status line command, so `statuslin
 - Status bar: Profiles > Session > Status bar enabled > Configure > drag in "Claude Sessions"
 - Hotkey: Settings > Keys > Key Bindings > Action "Invoke Script Function" > `claude_next_waiting()`
 
+## Remote access (behind Caddy)
+By default the daemon only listens on `127.0.0.1`. To use it from another device through a reverse proxy such as Caddy running on another machine of your network, create `~/Library/Application Support/iterm-claude-sidebar/config.json` on the Mac:
+
+    {
+      "bind": "0.0.0.0",
+      "allow_from": ["192.168.1.10"],
+      "allowed_hosts": ["sidebar.example.org"]
+    }
+
+- `allow_from`: the proxy's address (or CIDR). Required whenever `bind` is not loopback; the daemon refuses to start otherwise. Everything else gets a 403.
+- `allowed_hosts`: the host names visitors use (the `Host` header Caddy passes on). Requests with any other `Host` or a foreign `Origin` are rejected.
+
+Then restart (`launchctl kickstart -k gui/$(id -u)/io.github.gluebi.iterm-claude-sidebar`) and put authentication and TLS in the proxy, see [`docs/Caddyfile.example`](docs/Caddyfile.example). The daemon itself has no login.
+
+On a wide screen the page becomes a dashboard with the peek docked on the right; on a phone it stays a single column. Remotely, clicking a session opens its peek (raising a window on the Mac would be pointless), and PR chips are normal links. Peek, send, interrupt, `/clear`, rename, new and resume all work.
+
+**Security.** Whoever passes the proxy's login can type into every Claude session on the Mac, and sessions started with `--dangerously-skip-permissions` run commands without asking, so treat the login like shell access: strong credentials, TLS, and no exposure of the proxy to the internet unless you accept that. Traffic between the proxy and the Mac is plain HTTP, so keep it on a network you trust.
+
 ## Notes
 - Context % assumes a 1M-token window (`CONTEXT_WINDOW` in `state.py`)
 - Notifications use `osascript`, so clicking one doesn't focus the session
@@ -57,13 +76,13 @@ Issues and pull requests are welcome. This is a small tool, so changes that keep
 iTerm2 needs *Settings > General > Magic > Enable Python API*. There is no build step: `static/index.html` is served as is, and the page reloads itself when the file changes. Restart `sidebar.py` after editing the Python files.
 
 **Checks**
-- `python state.py` runs the assert-based self-check; it needs neither iTerm2 nor Claude Code.
+- `python state.py` and `python access.py` run the assert-based self-checks; they need neither iTerm2 nor Claude Code.
 - Try UI changes against your own sessions and in a narrow window (the toolbelt is about 300 px wide), in light and dark mode.
 
 **Guidelines**
 - Stay with the standard library, `iterm2` and `aiohttp`; avoid new dependencies and front-end tooling.
 - Give new interactive elements a `data-testid` (`{component}-{element}`, kebab-case), keep them keyboard-accessible with proper ARIA, and respect `prefers-reduced-motion`.
-- Anything under `/api/` goes through the `protect` middleware (localhost `Host` plus the `X-Sidebar` header). Anything that types into a terminal must keep asking first when the session is waiting for input or has unsent text.
+- Anything under `/api/` goes through the `protect` middleware (allowed peer, `Host` and `Origin`, plus the `X-Sidebar` header). Anything that types into a terminal must keep asking first when the session is waiting for input or has unsent text.
 - Comment only the *why*, in one short line.
 - Never put real project, branch or ticket names, tokens or paths in code, tests or screenshots. The README screenshots come from invented data.
 - Keep pull requests focused, say what you tested, and write commit messages in the imperative.

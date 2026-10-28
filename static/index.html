@@ -76,6 +76,20 @@
   .pill[data-armed] { border-color:var(--failed); color:var(--failed); }
   .hint { margin-left:auto; min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; color:var(--muted); font-size:10px; }
   .send-note { font-size:11px; color:var(--waiting); } .send-note.error { color:var(--failed); }
+  .chip { color:inherit; }
+  @media (min-width: 720px) {
+    body { padding:16px 24px; }
+    .tools, footer { max-width:480px; }
+    main { display:grid; grid-template-columns:repeat(auto-fill, minmax(340px, 1fr)); gap:16px; align-content:start; }
+    .group { align-self:start; padding:2px 8px 8px; border:1px solid var(--line); border-radius:12px; background:var(--card); }
+    #closed { grid-column:1 / -1; }
+    .peek, .peek.flip { position:fixed; top:16px; right:16px; bottom:16px; left:auto; width:min(520px, 42vw); transform-origin:100% 50%; grid-template-rows:auto minmax(0, 1fr) auto auto auto; z-index:30; }
+    .peek-body { max-height:none; min-height:0; }
+    body:has(.peek) main { margin-right:min(548px, calc(42vw + 28px)); }
+    .peek.enter, .peek.flip.enter { animation-name:peek-in-side; } .peek.leave, .peek.flip.leave { animation-name:peek-out-side; }
+    @keyframes peek-in-side { from { opacity:0; transform:translateX(16px); } }
+    @keyframes peek-out-side { to { opacity:0; transform:translateX(16px); } }
+  }
   .empty { color:var(--muted); padding:8px; } .err { color:var(--failed); padding:4px; }
   details { margin-top:14px; } summary { cursor:pointer; color:var(--muted); font-size:11px; text-transform:uppercase; letter-spacing:.06em; padding:0 4px; }
 </style>
@@ -170,6 +184,7 @@ function placePeek() {
   if (!card) return;
   const body = card.querySelector('.peek-body');
   card.classList.remove('flip'); body.style.maxHeight = '';
+  if (getComputedStyle(card).position === 'fixed') return;  // docked by CSS in the wide layout
   const anchor = card.parentElement.getBoundingClientRect();
   const below = innerHeight - anchor.bottom - 12, above = anchor.top - 12;
   const flip = card.getBoundingClientRect().bottom > innerHeight - 8 && above > below;  // open upwards when the other side has more room
@@ -251,9 +266,16 @@ function startRename(s, row) {
   input.focus(); input.select();
 }
 
+const prLabel = s => `PR #${s.pr.number}${s.pr.isDraft ? ' draft' : ''} · ${s.pr.state.toLowerCase()}`;
+
 function sessionRow(s) {
   const b = build('button', { className: 'row', title: s.cwd, key: 's' + s.id, testid: 'session-' + s.state,
-    'aria-label': `${s.name}, ${s.label}${s.unseen ? ', unseen' : ''}`, onclick: e => { e.currentTarget.blur(); post('/api/focus', { id: s.id }); } }, [
+    'aria-label': `${s.name}, ${s.label}${s.unseen ? ', unseen' : ''}`, onclick: e => {
+      e.currentTarget.blur();
+      if (!data.remote) return post('/api/focus', { id: s.id });
+      e.stopPropagation();  // otherwise the click-outside handler closes the peek this row just opened
+      peeking === s.id ? closePeek() : openPeek(s.id);
+    } }, [
     build('span', { className: 'dot ' + s.state }),
     build('span', { className: 'body' }, [
       build('div', { className: 'name', textContent: s.name, title: s.auto !== s.name ? `Claude's name: ${s.auto}` : '' }),
@@ -273,7 +295,9 @@ function sessionRow(s) {
       onclick: () => peeking === s.id ? closePeek() : openPeek(s.id) }),
     build('button', { className: 'icon edit', textContent: '✎', key: 'e' + s.id, title: 'Rename (F2)', 'aria-label': `Rename ${s.name}`, testid: 'session-rename', onclick: () => startRename(s, b) }),
     s.pr && build('div', { className: 'meta', style: 'padding:0 8px 4px 25px' }, [
-      build('button', { className: 'chip', key: 'c' + s.id, textContent: `PR #${s.pr.number}${s.pr.isDraft ? ' draft' : ''} · ${s.pr.state.toLowerCase()}`, onclick: () => post('/api/open-pr', { url: s.pr.url }) }),
+      data.remote
+        ? build('a', { className: 'chip', key: 'c' + s.id, textContent: prLabel(s), href: s.pr.url, target: '_blank', rel: 'noopener' })
+        : build('button', { className: 'chip', key: 'c' + s.id, textContent: prLabel(s), onclick: () => post('/api/open-pr', { url: s.pr.url }) }),
     ]),
     peeking === s.id && peekPanel(s),
   ]);
@@ -289,9 +313,9 @@ function render() {
   const open = $('#closed')?.open;
   const key = document.hasFocus() ? document.activeElement?.dataset.key : null;  // never refocus: it steals keyboard focus from the terminal
   $('#list').replaceChildren(...[
-    ...groups.flatMap(g => {
+    ...groups.map(g => {
       const folded = isCollapsed(g);
-      return [
+      return build('section', { className: 'group' }, [
         build('header', {}, [
           build('h2', {}, [build('button', { className: 'fold', key: 'f' + g.project, 'aria-expanded': String(!folded), title: folded ? 'Expand' : 'Collapse',
             onclick: () => toggle(collapsed, g.project, 'collapsed') }, [
@@ -303,7 +327,7 @@ function render() {
           build('button', { className: 'icon', textContent: '+', key: 'n' + g.project, title: `New Claude session in ${g.project}`, onclick: () => post('/api/new', { root: g.root }) }),
         ]),
         ...(folded ? [] : g.sessions.map(sessionRow)),
-      ];
+      ]);
     }),
     !groups.length && build('div', { className: 'empty', textContent: 'No sessions' }),
     data.closed.length ? build('details', { id: 'closed', open }, [

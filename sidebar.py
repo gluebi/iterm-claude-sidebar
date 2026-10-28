@@ -11,6 +11,7 @@ from pathlib import Path
 import iterm2
 from aiohttp import web
 
+import access
 import state
 
 PORT = 47831
@@ -19,6 +20,7 @@ STATIC = Path(__file__).parent / "static"
 DATA = Path.home() / "Library" / "Application Support" / "iterm-claude-sidebar"
 CLOSED_FILE = DATA / "closed.json"
 ALIASES_FILE = DATA / "aliases.json"
+CONFIG_FILE = DATA / "config.json"  # optional: {"bind", "allow_from", "allowed_hosts"}, see README
 UUID = re.compile(r"^[0-9a-f-]{36}$")
 
 
@@ -33,6 +35,9 @@ def save_json(file, value):
     DATA.mkdir(parents=True, exist_ok=True)
     file.write_text(json.dumps(value))
 
+
+BIND, NETWORKS, HOSTS = access.load(read_json(CONFIG_FILE, {}), PORT)
+LOCAL_HOST = f"127.0.0.1:{PORT}"  # the toolbelt's own address; any other Host means the page came through a proxy
 
 live: list[dict] = []
 closed: list[dict] = read_json(CLOSED_FILE, [])
@@ -101,10 +106,12 @@ def draft_of(typed):
 
 @web.middleware
 async def protect(request, handler):
-    if request.host != f"127.0.0.1:{PORT}":  # DNS rebinding
+    if not access.peer_allowed(request.remote, NETWORKS) or request.host not in HOSTS:  # who may connect; DNS rebinding
         raise web.HTTPForbidden()
-    if request.path.startswith("/api/") and request.headers.get("X-Sidebar") != "1":  # forces a CORS preflight cross-site
-        raise web.HTTPForbidden()
+    if request.path.startswith("/api/"):
+        origin = request.headers.get("Origin")
+        if request.headers.get("X-Sidebar") != "1" or (origin and not access.origin_allowed(origin, HOSTS)):  # header forces a CORS preflight cross-site
+            raise web.HTTPForbidden()
     return await handler(request)
 
 
@@ -195,8 +202,8 @@ async def open_tab(connection, app, command):
 async def main(connection):
     app = await iterm2.async_get_app(connection)
 
-    async def sessions(_):
-        return web.json_response({"groups": state.grouped([view(s) for s in live]), "closed": [c | {"name": aliases.get(c["id"], c["name"])} for c in closed], "summary": summary(), "limits": state.limits(), "version": (STATIC / "index.html").stat().st_mtime_ns})
+    async def sessions(request):
+        return web.json_response({"remote": request.host != LOCAL_HOST, "groups": state.grouped([view(s) for s in live]), "closed": [c | {"name": aliases.get(c["id"], c["name"])} for c in closed], "summary": summary(), "limits": state.limits(), "version": (STATIC / "index.html").stat().st_mtime_ns})
 
     def guarded(handler):
         async def inner(request):
@@ -294,9 +301,9 @@ async def main(connection):
     ])
     runner = web.AppRunner(server)
     await runner.setup()
-    await web.TCPSite(runner, "127.0.0.1", PORT).start()
+    await web.TCPSite(runner, BIND, PORT).start()
 
-    url = f"http://127.0.0.1:{PORT}/"
+    url = f"http://{'127.0.0.1' if BIND in ('0.0.0.0', '::') else BIND}:{PORT}/"
     reveal = lambda: iterm2.tool.async_register_web_view_tool(connection, "Claude Sessions", TOOL_ID, True, url)
     await reveal()
 
