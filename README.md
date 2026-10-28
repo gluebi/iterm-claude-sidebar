@@ -45,5 +45,31 @@ Claude Code only hands the plan limits to its status line command, so `statuslin
 - Notifications use `osascript`, so clicking one doesn't focus the session
 - `python state.py` runs the self-check
 
+## Contributing
+Issues and pull requests are welcome. This is a small tool, so changes that keep it small are the easiest to merge.
+
+**Setup**
+
+    python3 -m venv .venv && .venv/bin/pip install -r requirements.txt
+    launchctl bootout gui/$(id -u)/io.github.gluebi.iterm-claude-sidebar   # only if you installed the LaunchAgent: the daemon uses a fixed port (47831)
+    .venv/bin/python sidebar.py
+
+iTerm2 needs *Settings > General > Magic > Enable Python API*. There is no build step: `static/index.html` is served as is, and the page reloads itself when the file changes. Restart `sidebar.py` after editing the Python files.
+
+**Checks**
+- `python state.py` runs the assert-based self-check; it needs neither iTerm2 nor Claude Code.
+- Try UI changes against your own sessions and in a narrow window (the toolbelt is about 300 px wide), in light and dark mode.
+
+**Guidelines**
+- Stay with the standard library, `iterm2` and `aiohttp`; avoid new dependencies and front-end tooling.
+- Give new interactive elements a `data-testid` (`{component}-{element}`, kebab-case), keep them keyboard-accessible with proper ARIA, and respect `prefers-reduced-motion`.
+- Anything under `/api/` goes through the `protect` middleware (localhost `Host` plus the `X-Sidebar` header). Anything that types into a terminal must keep asking first when the session is waiting for input or has unsent text.
+- Comment only the *why*, in one short line.
+- Never put real project, branch or ticket names, tokens or paths in code, tests or screenshots. The README screenshots come from invented data.
+- Keep pull requests focused, say what you tested, and write commit messages in the imperative.
+
+**Reporting a bug**
+Include your Claude Code and iTerm2 versions, since the sidebar reads Claude Code's undocumented session files, plus the relevant lines of `~/Library/Logs/iterm-claude-sidebar.log` if you use the LaunchAgent.
+
 ## License
 MIT
