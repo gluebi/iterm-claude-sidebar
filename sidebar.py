@@ -4,8 +4,8 @@ import asyncio
 import json
 import re
 import shlex
-import sys
 import time
+import webbrowser
 from pathlib import Path
 
 import iterm2
@@ -23,22 +23,25 @@ UUID = re.compile(r"^[0-9a-f-]{36}$")
 live: list[dict] = []
 closed: list[dict] = json.loads(CLOSED_FILE.read_text()) if CLOSED_FILE.exists() else []
 unseen: set[str] = set()
-prs: dict[str, dict | None] = {}
-pr_checked: dict[str, float] = {}
+prs: dict[str, tuple[float, dict | None]] = {}  # cwd@branch -> (checked_at, PR)
 iterm_active = True
 
 
 def summary() -> str:
     n = lambda s: sum(x["state"] == s for x in live)
-    parts = [f"◐ {n('waiting')} waiting", f"✖ {n('failed')} failed", f"● {n('busy')} busy", f"✓ {len(unseen)} new"]
-    return "  ".join(p for p, c in zip(parts, (n("waiting"), n("failed"), n("busy"), len(unseen))) if c) or "Claude: idle"
+    items = [("◐", "waiting", n("waiting")), ("✖", "failed", n("failed")), ("●", "busy", n("busy")), ("✓", "new", len(unseen))]
+    return "  ".join(f"{icon} {count} {label}" for icon, label, count in items if count) or "Claude: idle"
 
 
 async def run(*cmd, cwd=None):
     p = await asyncio.create_subprocess_exec(
         *cmd, cwd=cwd, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.DEVNULL
     )
-    return (await p.communicate())[0].decode().strip()
+    try:
+        return (await asyncio.wait_for(p.communicate(), 10))[0].decode().strip()
+    except asyncio.TimeoutError:
+        p.kill()
+        return ""
 
 
 async def notify(title, text):
@@ -48,32 +51,34 @@ async def notify(title, text):
 
 async def find_session(app, pid):
     tty = await asyncio.to_thread(state.tty_of, pid)
-    for window in app.terminal_windows:
-        for tab in window.tabs:
-            for session in tab.sessions:
-                if tty and await session.async_get_variable("tty") == tty:
-                    return session
-    return None
+    if not tty:
+        return None
+    sessions = [s for window in app.terminal_windows for tab in window.tabs for s in tab.sessions]
+    ttys = await asyncio.gather(*(s.async_get_variable("tty") for s in sessions))
+    return next((s for s, t in zip(sessions, ttys) if t == tty), None)
 
 
-async def focused_pid(app):
+async def focused_id(app):
     window = app.current_terminal_window
     session = window and window.current_tab and window.current_tab.current_session
     tty = session and await session.async_get_variable("tty")
+    if not tty:
+        return None
     ttys = await asyncio.to_thread(lambda: {s["id"]: state.tty_of(s["pid"]) for s in live})
-    return next((sid for sid, t in ttys.items() if t == tty), None) if tty else None
+    return next((sid for sid, t in ttys.items() if t == tty), None)
+
+
+def pr_key(s):
+    return f"{s['cwd']}@{s['branch']}"
 
 
 async def refresh_pr(s):
-    key = f"{s['cwd']}@{s['branch']}"
-    if not s["branch"] or s["branch"] in ("master", "main") or time.time() - pr_checked.get(key, 0) < 120:
-        return
-    pr_checked[key] = time.time()
     out = await run("gh", "pr", "view", "--json", "number,url,state,isDraft", cwd=s["cwd"])
     try:
-        prs[key] = json.loads(out)
+        pr = json.loads(out)
     except ValueError:
-        prs[key] = None
+        pr = None
+    prs[pr_key(s)] = (time.time(), pr)
 
 
 def save_closed():
@@ -87,15 +92,20 @@ async def monitor(app):
     while True:
         live = await asyncio.to_thread(state.load)
         now = {s["id"]: s for s in live}
-        focus = await focused_pid(app) if iterm_active else None
+        focus = await focused_id(app) if iterm_active else None
         for sid, s in now.items():
             old = prev.get(sid)
-            if old and old["state"] != s["state"]:
-                if s["state"] in ("waiting", "failed") and focus != sid:
+            if old and old["state"] != s["state"] and focus != sid:
+                if s["state"] in state.NEEDS_ATTENTION:
                     await notify(f"Claude {s['label']}: {s['project']}", s["name"])
-                if s["state"] == "idle" and focus != sid:
+                elif s["state"] == "idle":
                     unseen.add(sid)
-            asyncio.ensure_future(refresh_pr(s))
+            checked, pr = prs.get(pr_key(s), (0, None))
+            if s["branch"] not in ("", "master", "main") and time.time() - checked > 120:
+                prs[pr_key(s)] = (time.time(), pr)  # claim the slot before the slow gh call
+                asyncio.create_task(refresh_pr(s))
+        for key in prs.keys() - {pr_key(s) for s in live}:
+            del prs[key]
         if focus:
             unseen.discard(focus)
         for sid, old in prev.items():
@@ -119,8 +129,7 @@ async def focus_monitor(connection):
 
 
 def view(s):
-    pr = prs.get(f"{s['cwd']}@{s['branch']}")
-    return s | {"unseen": s["id"] in unseen, "pr": pr}
+    return s | {"unseen": s["id"] in unseen, "pr": prs.get(pr_key(s), (0, None))[1]}
 
 
 async def open_tab(connection, app, command):
@@ -133,10 +142,7 @@ async def main(connection):
     app = await iterm2.async_get_app(connection)
 
     async def sessions(_):
-        groups = state.grouped([view(s) for s in live])
-        for g in groups:
-            g["root"] = g["sessions"][0]["root"]
-        return web.json_response({"groups": groups, "closed": closed, "summary": summary()})
+        return web.json_response({"groups": state.grouped([view(s) for s in live]), "closed": closed, "summary": summary(), "limits": state.limits()})
 
     def guarded(handler):
         async def inner(request):
@@ -171,9 +177,9 @@ async def main(connection):
         return web.Response(status=204)
 
     async def open_pr(_, body):
-        if body.get("url") not in {p["url"] for p in prs.values() if p}:
+        if body.get("url") not in {pr["url"] for _, pr in prs.values() if pr}:
             raise web.HTTPBadRequest()
-        await run("open", body["url"])
+        webbrowser.open(body["url"])
         return web.Response(status=204)
 
     server = web.Application()
@@ -195,7 +201,7 @@ async def main(connection):
 
     @iterm2.RPC
     async def claude_next_waiting():
-        waiting = sorted((s for s in live if s["state"] in ("waiting", "failed")), key=lambda s: s["since"] or 0)
+        waiting = sorted((s for s in live if s["state"] in state.NEEDS_ATTENTION), key=lambda s: s["since"] or 0)
         for s in waiting:
             session = await find_session(app, s["pid"])
             if session:
@@ -220,5 +226,4 @@ async def main(connection):
     await asyncio.gather(monitor(app), focus_monitor(connection))
 
 
-if "--selfcheck" not in sys.argv:
-    iterm2.run_forever(main)
+iterm2.run_forever(main)

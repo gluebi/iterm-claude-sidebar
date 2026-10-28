@@ -24,6 +24,10 @@ The log is `~/Library/Logs/iterm-claude-sidebar.log`. Remove with
 ### Failed state (optional hook)
 Add to `~/.claude/settings.json` (use the absolute path of `hooks/claude-failed.sh`): `StopFailure` and `PostToolUseFailure` run it with `set`; `Stop`, `UserPromptSubmit` and `SessionStart` run it with `clear`.
 
+### 5h / 7d usage footer (status line tap)
+Claude Code only hands the plan limits to its status line command, so `statusline-tap.py` records them and then runs your real status line unchanged. In `~/.claude/settings.json` set
+`statusLine.command` to `/absolute/path/statusline-tap.py <your existing status line command>` (or just the tap if you have none). The tap writes `~/.claude/rate-limits.json`; the sidebar never depends on what your status line prints. Subscription plans only; values appear after a session's first response.
+
 ### Manual iTerm setup
 - Status bar: Profiles > Session > Status bar enabled > Configure > drag in "Claude Sessions"
 - Hotkey: Settings > Keys > Key Bindings > Action "Invoke Script Function" > `claude_next_waiting()`

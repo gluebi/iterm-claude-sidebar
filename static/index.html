@@ -7,7 +7,7 @@
 <style>
   :root { --bg:#fff; --fg:#1d1d1f; --muted:#6e6e73; --hover:#f0f0f3; --line:#d9d9de; --busy:#0a6cff; --waiting:#b36b00; --done:#1a7f37; --failed:#cf222e; color-scheme: light dark; }
   @media (prefers-color-scheme: dark) { :root { --bg:#1e1e1e; --fg:#f2f2f7; --muted:#a1a1a6; --hover:#2c2c2e; --line:#3a3a3c; --busy:#4d9aff; --waiting:#f0a63a; --done:#3fb950; --failed:#ff6b6b; } }
-  body { margin:0; padding:8px; background:var(--bg); color:var(--fg); font:13px/1.35 -apple-system, system-ui, sans-serif; }
+  body { margin:0; padding:8px; display:flex; flex-direction:column; min-height:100vh; box-sizing:border-box; background:var(--bg); color:var(--fg); font:13px/1.35 -apple-system, system-ui, sans-serif; }
   .tools { display:flex; gap:6px; position:sticky; top:0; background:var(--bg); padding-bottom:6px; }
   input, select { min-width:0; padding:4px 6px; border:1px solid var(--line); border-radius:6px; background:var(--bg); color:var(--fg); font:inherit; }
   input { flex:1; }
@@ -30,6 +30,13 @@
   .meta { color:var(--muted); font-size:11px; display:flex; flex-wrap:wrap; gap:2px 8px; }
   .new { background:var(--done); color:#fff; border-radius:8px; padding:0 6px; font-size:10px; align-self:center; }
   .chip { all:unset; cursor:pointer; text-decoration:underline; } .chip:focus-visible { outline:2px solid var(--busy); }
+  main { flex:1; }
+  footer { margin-top:14px; padding-top:8px; border-top:1px solid var(--line); display:grid; gap:4px; font-size:11px; }
+  .limit { display:grid; grid-template-columns:20px 1fr 34px; gap:6px; align-items:center; }
+  .limit .track { height:6px; border-radius:3px; background:var(--hover); overflow:hidden; }
+  .limit .fill { height:100%; background:var(--done); } .limit.warn .fill { background:var(--waiting); } .limit.high .fill { background:var(--failed); }
+  .limit .pct { text-align:right; font-variant-numeric:tabular-nums; } .limit .reset { grid-column:2 / 4; color:var(--muted); margin-top:-3px; }
+  .limit.stale { opacity:.55; }
   .empty { color:var(--muted); padding:8px; } .err { color:var(--failed); padding:4px; }
   details { margin-top:14px; } summary { cursor:pointer; color:var(--muted); font-size:11px; text-transform:uppercase; letter-spacing:.06em; padding:0 4px; }
 </style>
@@ -42,14 +49,22 @@
   </select>
 </div>
 <main id="list" data-testid="sidebar-list" aria-live="polite"></main>
+<footer id="limits" data-testid="sidebar-limits" aria-label="Usage limits"></footer>
 <script>
 const $ = s => document.querySelector(s);
 const store = {
   get: (k, d) => { try { return JSON.parse(localStorage.getItem(k)) ?? d; } catch { return d; } },
   set: (k, v) => { try { localStorage.setItem(k, JSON.stringify(v)); } catch {} },
 };
-function build(tag, props, kids = []) { const { key, ...rest } = props; const e = document.createElement(tag);
-  for (const [k, v] of Object.entries(rest)) k.startsWith('aria-') ? e.setAttribute(k, v) : (e[k] = v); if (key) e.dataset.key = key; e.append(...kids.filter(Boolean)); return e; }
+function build(tag, props, kids = []) {
+  const { key, testid, ...rest } = props, e = document.createElement(tag);
+  for (const [k, v] of Object.entries(rest)) k.startsWith('aria-') ? e.setAttribute(k, v) : (e[k] = v);
+  if (key) e.dataset.key = key;
+  if (testid) e.dataset.testid = testid;
+  e.append(...kids.filter(Boolean));
+  return e;
+}
+const toggle = (set, name, storeKey) => { set.has(name) ? set.delete(name) : set.add(name); store.set(storeKey, [...set]); render(); };
 const ago = ms => { const s = Math.max(0, (Date.now() - ms) / 1000 | 0); return s < 60 ? s + 's' : s < 3600 ? (s / 60 | 0) + 'm' : s < 86400 ? (s / 3600 | 0) + 'h' : (s / 86400 | 0) + 'd'; };
 const post = (path, body) => fetch(path, { method: 'POST', headers: { 'X-Sidebar': '1', 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
 
@@ -61,7 +76,8 @@ $('#filter').value = store.get('filter', '');
 let data = { groups: [], closed: [] };
 
 function sessionRow(s) {
-  const b = build('button', { className: 'row', title: s.cwd,  onclick: e => { e.currentTarget.blur(); post('/api/focus', { id: s.id }); } }, [
+  const b = build('button', { className: 'row', title: s.cwd, key: 's' + s.id, testid: 'session-' + s.state,
+    'aria-label': `${s.name}, ${s.label}${s.unseen ? ', unseen' : ''}`, onclick: e => { e.currentTarget.blur(); post('/api/focus', { id: s.id }); } }, [
     build('span', { className: 'dot ' + s.state }),
     build('span', { className: 'body' }, [
       build('div', { className: 'name', textContent: s.name }),
@@ -71,11 +87,9 @@ function sessionRow(s) {
         s.jira && build('span', { textContent: s.jira }),
         s.branch && build('span', { textContent: s.branch, title: 'branch' }),
       ]),
-    ].filter(Boolean)),
+    ]),
     s.unseen && build('span', { className: 'new', textContent: 'new' }),
-  ].filter(Boolean));
-  b.dataset.testid = 'session-' + s.state; b.dataset.key = 's' + s.id;
-  b.setAttribute('aria-label', `${s.name}, ${s.label}${s.unseen ? ', unseen' : ''}`);
+  ]);
   return s.pr ? build('div', {}, [b, build('div', { className: 'meta', style: 'padding:0 8px 4px 25px' }, [
     build('button', { className: 'chip', key: 'c' + s.id, textContent: `PR #${s.pr.number}${s.pr.isDraft ? ' draft' : ''} · ${s.pr.state.toLowerCase()}`, onclick: () => post('/api/open-pr', { url: s.pr.url }) }),
   ])]) : b;
@@ -88,37 +102,61 @@ function render() {
   const groups = data.groups.map(g => ({ ...g, sessions: g.sessions.filter(visible) })).filter(g => g.sessions.length)
     .sort((a, b) => pinned.has(b.project) - pinned.has(a.project) || a.project.localeCompare(b.project));
   const open = $('#closed')?.open;
-  const key = document.hasFocus() ? document.activeElement?.dataset?.key : null;  // never refocus: it steals keyboard focus from the terminal
+  const key = document.hasFocus() ? document.activeElement?.dataset.key : null;  // never refocus: it steals keyboard focus from the terminal
   $('#list').replaceChildren(...[
-    ...groups.flatMap(g => [
-      build('header', {}, [
-        build('h2', {}, [build('button', { className: 'fold', key: 'f' + g.project, 'aria-expanded': String(!isCollapsed(g)), title: isCollapsed(g) ? 'Expand' : 'Collapse',
-          onclick: () => { collapsed.has(g.project) ? collapsed.delete(g.project) : collapsed.add(g.project); store.set('collapsed', [...collapsed]); render(); } }, [
-          build('span', { textContent: isCollapsed(g) ? '▸' : '▾', 'aria-hidden': 'true' }),
-          build('span', { textContent: g.project }),
-          isCollapsed(g) && build('span', { className: 'dots' }, g.sessions.map(x => build('span', { className: 'dot ' + x.state, title: `${x.name}: ${x.label}` }))),
-        ].filter(Boolean))]),
-        Object.assign(build('button', { className: 'icon', textContent: '★', title: 'Pin project', key: 'p' + g.project,  onclick: () => { pinned.has(g.project) ? pinned.delete(g.project) : pinned.add(g.project); store.set('pinned', [...pinned]); render(); } }), { ariaPressed: String(pinned.has(g.project)) }),
-        build('button', { className: 'icon', textContent: '+', key: 'n' + g.project, title: `New Claude session in ${g.project}`, onclick: () => post('/api/new', { root: g.root }) }),
-      ]),
-      ...(isCollapsed(g) ? [] : g.sessions.map(sessionRow)),
-    ]),
+    ...groups.flatMap(g => {
+      const folded = isCollapsed(g);
+      return [
+        build('header', {}, [
+          build('h2', {}, [build('button', { className: 'fold', key: 'f' + g.project, 'aria-expanded': String(!folded), title: folded ? 'Expand' : 'Collapse',
+            onclick: () => toggle(collapsed, g.project, 'collapsed') }, [
+            build('span', { textContent: folded ? '▸' : '▾', 'aria-hidden': 'true' }),
+            build('span', { textContent: g.project }),
+            folded && build('span', { className: 'dots' }, g.sessions.map(x => build('span', { className: 'dot ' + x.state, title: `${x.name}: ${x.label}` }))),
+          ])]),
+          build('button', { className: 'icon', textContent: '★', title: 'Pin project', key: 'p' + g.project, 'aria-pressed': String(pinned.has(g.project)), onclick: () => toggle(pinned, g.project, 'pinned') }),
+          build('button', { className: 'icon', textContent: '+', key: 'n' + g.project, title: `New Claude session in ${g.project}`, onclick: () => post('/api/new', { root: g.root }) }),
+        ]),
+        ...(folded ? [] : g.sessions.map(sessionRow)),
+      ];
+    }),
     !groups.length && build('div', { className: 'empty', textContent: 'No sessions' }),
-    data.closed.length ? Object.assign(build('details', { id: 'closed' }, [
+    data.closed.length ? build('details', { id: 'closed', open }, [
       build('summary', { textContent: 'Recently closed' }),
       ...data.closed.map(c => build('button', { className: 'row', title: `claude --resume ${c.id}`, onclick: () => post('/api/resume', { id: c.id }) }, [
         build('span', { className: 'body' }, [build('div', { className: 'name', textContent: c.name }), build('div', { className: 'meta', textContent: `${c.project} · closed ${ago(c.closedAt)} ago · resume` })]),
       ])),
-    ]), { open }) : null,
+    ]) : null,
   ].filter(Boolean));
   if (key) document.querySelector(`[data-key="${CSS.escape(key)}"]`)?.focus();
+  renderLimits();
+}
+
+const fmtReset = (epoch, long) => new Date(epoch * 1000).toLocaleString([], long ? { weekday: 'short', hour: '2-digit', minute: '2-digit' } : { hour: '2-digit', minute: '2-digit' });
+
+function renderLimits() {
+  const rows = [['5h', 'five_hour', false], ['7d', 'seven_day', true]].flatMap(([label, key, long]) => {
+    const w = data.limits?.[key];
+    if (!w) return [];
+    const stale = w.resets_at * 1000 < Date.now();  // window has rolled over; value updates with the next response
+    const pct = Math.round(w.pct), level = pct >= 90 ? 'high' : pct >= 70 ? 'warn' : '';
+    const text = stale ? `${label} window reset` : `${pct}% used, resets ${fmtReset(w.resets_at, long)}`;
+    return [build('div', { className: `limit ${level} ${stale ? 'stale' : ''}`, testid: 'limit-' + key, role: 'meter', 'aria-label': `${label} usage limit`,
+      'aria-valuemin': 0, 'aria-valuemax': 100, 'aria-valuenow': pct, 'aria-valuetext': text, title: text }, [
+      build('span', { textContent: label }),
+      build('div', { className: 'track' }, [build('div', { className: 'fill', style: `width:${Math.min(pct, 100)}%` })]),
+      build('span', { className: 'pct', textContent: stale ? '–' : pct + '%' }),
+      build('span', { className: 'reset', textContent: stale ? 'resets after next response' : '↻ ' + fmtReset(w.resets_at, long) }),
+    ])];
+  });
+  $('#limits').replaceChildren(...rows);
 }
 
 let sig = '', last = 0;
 async function refresh() {
   try {
     data = await (await fetch('/api/sessions')).json();
-    const now = JSON.stringify(data.groups.map(g => g.sessions.map(({ id, state, ctx, branch, pr, unseen, name }) => [id, state, ctx, branch, pr?.state, unseen, name])).concat(data.closed.length));
+    const now = JSON.stringify(data);
     if (now !== sig || Date.now() - last > 10000) { sig = now; last = Date.now(); render(); }
   }
   catch { $('#list').replaceChildren(build('div', { className: 'err', textContent: 'sidebar daemon unreachable' })); }
