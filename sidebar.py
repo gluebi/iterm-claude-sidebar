@@ -314,7 +314,9 @@ async def main(connection):
             draft = draft_of((await read_screen(session, full=False))[1])
             if draft:
                 return web.json_response({"detail": f"Unsent text at the prompt: {draft[:80]}"}, status=409)
-        await session.async_send_text(text + "\r")
+        await session.async_send_text(text)
+        await asyncio.sleep(0.15)  # Claude reads a text+Enter chunk as a paste, so Enter has to arrive on its own
+        await session.async_send_text("\r")
         return web.Response(status=204)
 
     tickets: dict[str, tuple[str, float]] = {}  # one-time websocket tickets: a browser websocket can't send the X-Sidebar header
