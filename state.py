@@ -96,6 +96,7 @@ def tool_label(block: dict) -> str:
     return f"{block.get('name', 'tool')} {' '.join(detail.split())[:80]}".strip()
 
 
+@ttl_cache(1)
 def conversation(session_id: str, limit: int = 8) -> list[dict]:
     """The last few user/assistant turns as plain text with tool calls summarised; no thinking, tool output or injected notices."""
     items = []
@@ -107,7 +108,7 @@ def conversation(session_id: str, limit: int = 8) -> list[dict]:
             content = d["message"]["content"]
         except (ValueError, KeyError, TypeError):
             continue
-        if d.get("type") not in ("user", "assistant") or d.get("isSidechain"):
+        if d.get("type") not in ("user", "assistant") or d.get("isSidechain") or d.get("isMeta"):
             continue
         parts = []
         for b in [{"type": "text", "text": content}] if isinstance(content, str) else content:

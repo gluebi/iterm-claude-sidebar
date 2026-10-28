@@ -116,7 +116,7 @@ $('#filter').value = store.get('filter', '');
 let data = { groups: [], closed: [] };
 
 let editing = false;  // pauses re-rendering so the input isn't destroyed mid-edit
-let peeking = null, peekMode = 'transcript', peekPayload = null, peekSig = '', peekStick = true, peekBusy = false, peekEnter = false, closing = false, sendText = '', sendNote = null;
+let peeking = null, peekMode = 'transcript', peekPayload = null, peekStick = true, peekBusy = false, peekEnter = false, closing = false, sendText = '', sendNote = null;
 const reduceMotion = matchMedia('(prefers-reduced-motion: reduce)').matches;
 
 function renderNote() {
@@ -151,15 +151,15 @@ function fillBody(body, payload) {
 }
 
 async function peekTick() {
-  if (!peeking || peekBusy || closing) return;
+  if (!peeking || peekBusy || closing || document.hidden) return;
   peekBusy = true;
   const id = peeking, mode = peekMode;
   try {
     const r = await get(`/api/peek?id=${encodeURIComponent(id)}&mode=${mode}`);
     const payload = r.ok ? await r.json() : { items: [], lines: [r.status === 404 && mode === 'screen' ? 'Not open in iTerm.' : 'Unavailable.'] };
-    const sig = mode + JSON.stringify(payload), body = document.querySelector('[data-testid="peek-body"]');
-    if (id === peeking && mode === peekMode && sig !== peekSig) {
-      peekSig = sig; peekPayload = payload;
+    const body = document.querySelector('[data-testid="peek-body"]');
+    if (id === peeking && mode === peekMode && JSON.stringify(payload) !== JSON.stringify(peekPayload)) {
+      peekPayload = payload;
       if (body) { fillBody(body, payload); placePeek(); if (peekStick) body.scrollTop = body.scrollHeight; }
     }
   } finally { peekBusy = false; }
@@ -178,8 +178,10 @@ function placePeek() {
   if (card.offsetHeight > room) body.style.maxHeight = Math.max(40, room - (card.offsetHeight - body.offsetHeight)) + 'px';
 }
 
+const resetPeek = () => { peekPayload = null; peekStick = true; };
+
 function openPeek(id) {
-  peeking = id; peekPayload = null; peekSig = ''; peekStick = true; sendNote = null; closing = false;
+  peeking = id; resetPeek(); sendNote = null; closing = false;
   peekEnter = !reduceMotion;
   render(); peekTick();
 }
@@ -187,11 +189,11 @@ function openPeek(id) {
 function closePeek() {
   if (!peeking || closing) return;
   const id = peeking, card = document.querySelector('.peek'), refocus = card?.contains(document.activeElement);
-  const finish = () => { if (!closing && card && !reduceMotion) return; peeking = null; closing = false; render(); if (refocus) document.querySelector(`[data-key="v${id}"]`)?.focus(); };
+  const finish = () => { peeking = null; closing = false; render(); if (refocus) document.querySelector(`[data-key="v${id}"]`)?.focus(); };
   if (!card || reduceMotion) return finish();
   closing = true;
   card.classList.remove('enter'); card.classList.add('leave');
-  card.addEventListener('animationend', e => { if (e.target === card) finish(); });
+  card.addEventListener('animationend', e => e.target === card && closing && finish());
   setTimeout(() => closing && finish(), 300);
 }
 
@@ -200,7 +202,7 @@ function peekPanel(s) {
   if (peekPayload) fillBody(body, peekPayload); else body.textContent = 'Loading…';
   body.onscroll = () => { peekStick = body.scrollHeight - body.scrollTop - body.clientHeight < 8; };
   const seg = (mode, label) => build('button', { className: 'seg', textContent: label, 'aria-pressed': String(peekMode === mode), testid: 'peek-tab-' + mode,
-    onclick: () => { peekMode = mode; peekPayload = null; peekSig = ''; peekStick = true; render(); peekTick(); } });
+    onclick: () => { peekMode = mode; resetPeek(); render(); peekTick(); } });
   const input = build('input', { className: 'composer-input', value: sendText, maxLength: 2000, testid: 'send-input', 'aria-label': `Send a message to ${s.name}`,
     placeholder: s.state === 'busy' ? 'Send (will queue)…' : 'Send a message…' });
   input.oninput = () => { sendText = input.value; };
@@ -355,8 +357,10 @@ async function refresh() {
 $('#filter').oninput = () => { store.set('filter', $('#filter').value); render(); };
 $('#hide').onchange = () => { store.set('hide', $('#hide').value); render(); };
 document.addEventListener('click', e => { if (peeking && !e.target.closest('.peek, [data-testid="session-peek"]')) closePeek(); });
-addEventListener('resize', placePeek);
-addEventListener('scroll', placePeek, { passive: true });
+let placeQueued = false;  // resize/scroll fire in bursts; place once per frame
+const placeSoon = () => { if (!placeQueued) { placeQueued = true; requestAnimationFrame(() => { placeQueued = false; placePeek(); }); } };
+addEventListener('resize', placeSoon);
+addEventListener('scroll', placeSoon, { passive: true });
 document.addEventListener('keydown', e => { if (e.key === 'Escape' && peeking) closePeek(); });
 refresh(); setInterval(refresh, 1000); setInterval(peekTick, 1000);
 </script>

@@ -22,7 +22,6 @@ ALIASES_FILE = DATA / "aliases.json"
 UUID = re.compile(r"^[0-9a-f-]{36}$")
 
 
-
 def read_json(file, default):
     try:
         return json.loads(file.read_text())
@@ -83,11 +82,11 @@ async def find_session(app, pid):
     return next((s for s, t in zip(sessions, ttys) if t == tty), None)
 
 
-async def read_screen(session):
-    """(visible lines, text on the cursor's row before the cursor)."""
+async def read_screen(session, full=True):
+    """(visible lines unless full=False, text on the cursor's row before the cursor)."""
     contents = await session.async_get_screen_contents()
     row = lambda i: contents.line(i).string.replace("\x00", " ")  # NUL marks empty cells
-    lines = [row(i).rstrip() for i in range(contents.number_of_lines)]
+    lines = [row(i).rstrip() for i in range(contents.number_of_lines)] if full else []
     while lines and not lines[-1]:
         lines.pop()
     cursor = contents.cursor_coord
@@ -161,12 +160,14 @@ async def monitor(app):
         for sid, old in prev.items():
             if sid not in now:
                 unseen.discard(sid)
-                closed.insert(0, {k: old[k] for k in ("id", "cwd", "project")} | {"name": display_name(old), "closedAt": int(time.time() * 1000)})
+                closed.insert(0, {k: old[k] for k in ("id", "cwd", "project")} | {"name": old["name"], "closedAt": int(time.time() * 1000)})
                 del closed[15:]
                 save_json(CLOSED_FILE, closed)
         closed[:] = [c for c in closed if c["id"] not in now]
-        for sid in aliases.keys() - now.keys() - {c["id"] for c in closed}:  # sessions that are gone and not resumable
+        gone = aliases.keys() - now.keys() - {c["id"] for c in closed} if aliases else ()  # sessions that are gone and not resumable
+        for sid in gone:
             del aliases[sid]
+        if gone:
             save_json(ALIASES_FILE, aliases)
         prev = now
         await asyncio.sleep(1)
@@ -195,7 +196,7 @@ async def main(connection):
     app = await iterm2.async_get_app(connection)
 
     async def sessions(_):
-        return web.json_response({"groups": state.grouped([view(s) for s in live]), "closed": closed, "summary": summary(), "limits": state.limits(), "version": (STATIC / "index.html").stat().st_mtime_ns})
+        return web.json_response({"groups": state.grouped([view(s) for s in live]), "closed": [c | {"name": aliases.get(c["id"], c["name"])} for c in closed], "summary": summary(), "limits": state.limits(), "version": (STATIC / "index.html").stat().st_mtime_ns})
 
     def guarded(handler):
         async def inner(request):
@@ -205,11 +206,21 @@ async def main(connection):
     async def activate(session):
         await session.async_activate(select_tab=True, order_window_front=True)
 
-    async def focus(_, body):
-        match = next((s for s in live if s["id"] == body.get("id")), None)
-        session = match and await find_session(app, match["pid"])
+    def live_match(sid):
+        match = next((s for s in live if s["id"] == sid), None)
+        if not match:
+            raise web.HTTPNotFound()
+        return match
+
+    async def live_session(sid):
+        match = live_match(sid)
+        session = await find_session(app, match["pid"])
         if not session:
             raise web.HTTPNotFound()
+        return match, session
+
+    async def focus(_, body):
+        match, session = await live_session(body.get("id"))
         unseen.discard(match["id"])
         await activate(session)
         return web.Response(status=204)
@@ -227,21 +238,14 @@ async def main(connection):
         return web.Response(status=204)
 
     async def peek(request):
-        match = next((s for s in live if s["id"] == request.query.get("id")), None)
-        if not match:
-            raise web.HTTPNotFound()
+        sid = request.query.get("id")
         if request.query.get("mode") == "screen":
-            session = await find_session(app, match["pid"])
-            if not session:
-                raise web.HTTPNotFound()
+            _, session = await live_session(sid)
             return web.json_response({"lines": (await read_screen(session))[0]})
-        return web.json_response({"items": await asyncio.to_thread(state.conversation, match["id"])})
+        return web.json_response({"items": await asyncio.to_thread(state.conversation, live_match(sid)["id"])})
 
     async def send(_, body):
-        match = next((s for s in live if s["id"] == body.get("id")), None)
-        session = match and await find_session(app, match["pid"])
-        if not session:
-            raise web.HTTPNotFound()
+        match, session = await live_session(body.get("id"))
         if body.get("key") == "esc":
             await session.async_send_text("\x1b")
             return web.Response(status=204)
@@ -250,10 +254,10 @@ async def main(connection):
             raise web.HTTPBadRequest()  # single line only: a newline would submit early
         if not body.get("force"):
             if match["state"] == "waiting":
-                return web.json_response({"reason": "waiting", "detail": "The session is waiting for input; text would go into that prompt."}, status=409)
-            draft = draft_of((await read_screen(session))[1])
+                return web.json_response({"detail": "The session is waiting for input; text would go into that prompt."}, status=409)
+            draft = draft_of((await read_screen(session, full=False))[1])
             if draft:
-                return web.json_response({"reason": "draft", "detail": f"Unsent text at the prompt: {draft[:80]}"}, status=409)
+                return web.json_response({"detail": f"Unsent text at the prompt: {draft[:80]}"}, status=409)
         await session.async_send_text(text + "\r")
         return web.Response(status=204)
 
