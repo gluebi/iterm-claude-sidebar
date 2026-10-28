@@ -3,6 +3,7 @@
 import asyncio
 import json
 import re
+import secrets
 import shlex
 import time
 import webbrowser
@@ -10,9 +11,11 @@ from pathlib import Path
 
 import iterm2
 from aiohttp import web
+from iterm2.notifications import async_subscribe_to_screen_update_notification, async_unsubscribe
 
 import access
 import state
+import term
 
 PORT = 47831
 TOOL_ID = "io.github.gluebi.iterm-claude-sidebar"
@@ -108,11 +111,57 @@ def draft_of(typed):
 async def protect(request, handler):
     if not access.peer_allowed(request.remote, NETWORKS) or request.host not in HOSTS:  # who may connect; DNS rebinding
         raise web.HTTPForbidden()
+    if request.path.startswith("/ws/") and not access.origin_allowed(request.headers.get("Origin", ""), HOSTS):  # browsers always send Origin on a websocket handshake
+        raise web.HTTPForbidden()
     if request.path.startswith("/api/"):
         origin = request.headers.get("Origin")
         if request.headers.get("X-Sidebar") != "1" or (origin and not access.origin_allowed(origin, HOSTS)):  # header forces a CORS preflight cross-site
             raise web.HTTPForbidden()
     return await handler(request)
+
+
+async def term_stream(session, ws):
+    """Mirror the session's screen to the browser terminal, rewriting only changed rows."""
+    previous, shape, cursor = [], None, None
+    changed = asyncio.Event()  # persistent: ScreenStreamer drops updates that arrive between two waits
+
+    async def on_update(_connection, _message):
+        changed.set()
+
+    token = await async_subscribe_to_screen_update_notification(session.connection, on_update, session.session_id)
+    try:
+        while True:
+            changed.clear()  # before reading, so an update during the read triggers another pass
+            contents = await session.async_get_screen_contents()
+            columns = int(await session.async_get_variable("columns"))
+            rows = [term.render_row(contents.line(i), columns) for i in range(contents.number_of_lines)]
+            at = (contents.cursor_coord.x, contents.cursor_coord.y)
+            if (columns, len(rows)) != shape:  # first frame or a resize: repaint everything
+                previous, shape = [], (columns, len(rows))
+            if rows != previous or at != cursor:
+                await ws.send_json({"cols": columns, "rows": len(rows), "data": term.paint(rows, previous, at)})
+                previous, cursor = rows, at
+            try:  # the timeout is a safety net, not the update path
+                await asyncio.wait_for(changed.wait(), 2.0)
+            except asyncio.TimeoutError:
+                pass
+            await asyncio.sleep(0.02)  # coalesce bursts
+    finally:
+        try:
+            await async_unsubscribe(session.connection, token)
+        except Exception:  # the session may already be gone
+            pass
+
+
+async def term_input(session, ws):
+    async for msg in ws:
+        try:
+            m = json.loads(msg.data) if msg.type == web.WSMsgType.TEXT else None
+        except ValueError:
+            continue
+        text = m.get("d") if isinstance(m, dict) else None
+        if isinstance(text, str) and len(text) <= 65536:
+            await session.async_send_text(f"\x1b[200~{text}\x1b[201~" if m.get("t") == "paste" else text)
 
 
 async def focused_id(app):
@@ -268,6 +317,31 @@ async def main(connection):
         await session.async_send_text(text + "\r")
         return web.Response(status=204)
 
+    tickets: dict[str, tuple[str, float]] = {}  # one-time websocket tickets: a browser websocket can't send the X-Sidebar header
+
+    async def term_ticket(_, body):
+        match, _session = await live_session(body.get("id"))
+        now = time.time()
+        for stale in [t for t, (_, expires) in tickets.items() if expires < now]:
+            del tickets[stale]
+        token = secrets.token_urlsafe(24)
+        tickets[token] = (match["id"], now + 30)
+        return web.json_response({"ticket": token})
+
+    async def term_ws(request):
+        sid, expires = tickets.pop(request.query.get("ticket", ""), (None, 0))
+        if not sid or expires < time.time():
+            raise web.HTTPForbidden()
+        _, session = await live_session(sid)
+        ws = web.WebSocketResponse(heartbeat=20, max_msg_size=1 << 17)
+        await ws.prepare(request)
+        tasks = [asyncio.create_task(term_stream(session, ws)), asyncio.create_task(term_input(session, ws))]
+        await asyncio.wait(tasks, return_when=asyncio.FIRST_COMPLETED)
+        for task in tasks:
+            task.cancel()
+        await ws.close()
+        return ws
+
     async def new(_, body):
         if body.get("root") not in {s["root"] for s in live}:
             raise web.HTTPBadRequest()
@@ -294,6 +368,9 @@ async def main(connection):
         web.post("/api/focus", guarded(focus)),
         web.get("/api/peek", peek),
         web.post("/api/send", guarded(send)),
+        web.post("/api/term-ticket", guarded(term_ticket)),
+        web.get("/ws/term", term_ws),
+        web.static("/vendor", STATIC / "vendor"),
         web.post("/api/rename", guarded(rename)),
         web.post("/api/new", guarded(new)),
         web.post("/api/resume", guarded(resume)),

@@ -90,6 +90,14 @@
     @keyframes peek-in-side { from { opacity:0; transform:translateX(16px); } }
     @keyframes peek-out-side { to { opacity:0; transform:translateX(16px); } }
   }
+  .term-view { position:fixed; inset:0; z-index:60; display:grid; grid-template-rows:auto minmax(0, 1fr) auto; background:#161618; color:#e6e6e6; }
+  .term-bar, .term-keys { display:flex; align-items:center; gap:8px; padding:8px 12px; background:#242427; font-size:12px; }
+  .term-bar .name { flex:1; min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; font-weight:600; }
+  .term-bar .status { color:#9a9aa0; } .term-bar .status.live { color:#3fb950; }
+  .term-bar button, .term-keys button { all:unset; cursor:pointer; padding:3px 10px; border:1px solid #3a3a3e; border-radius:999px; }
+  .term-bar button:hover, .term-keys button:hover, .term-bar button:focus-visible, .term-keys button:focus-visible { background:#34343a; outline:none; box-shadow:0 0 0 2px #4d9aff; }
+  .term-keys { flex-wrap:wrap; } .term-bar button[hidden] { display:none; }
+  .term-host { display:grid; place-items:center; min-height:0; overflow:hidden; padding:8px; }
   .empty { color:var(--muted); padding:8px; } .err { color:var(--failed); padding:4px; }
   details { margin-top:14px; } summary { cursor:pointer; color:var(--muted); font-size:11px; text-transform:uppercase; letter-spacing:.06em; padding:0 4px; }
 </style>
@@ -212,6 +220,67 @@ function closePeek() {
   setTimeout(() => closing && finish(), 300);
 }
 
+let xtermReady;
+const loadXterm = () => xtermReady ??= new Promise((resolve, reject) => {  // ~300 KB: only fetched when a terminal is opened
+  document.head.append(build('link', { rel: 'stylesheet', href: '/vendor/xterm.css' }));
+  document.head.append(build('script', { src: '/vendor/xterm.js', onload: resolve, onerror: () => { xtermReady = null; reject(new Error('xterm.js failed to load')); } }));
+});
+
+const TERM_KEYS = [['Esc', '\x1b'], ['Tab', '\t'], ['⇧Tab', '\x1b[Z'], ['↑', '\x1b[A'], ['↓', '\x1b[B'], ['←', '\x1b[D'], ['→', '\x1b[C'], ['Enter', '\r'], ['Ctrl+C', '\x03']];
+
+async function openTerminal(s) {
+  try { await loadXterm(); } catch { sendNote = { kind: 'error', text: 'Could not load the terminal' }; renderNote(); return; }
+  const r = await post('/api/term-ticket', { id: s.id });
+  if (!r.ok) { sendNote = { kind: 'error', text: r.status === 404 ? 'Session is not open in iTerm' : 'Could not open the terminal' }; renderNote(); return; }
+  const { ticket } = await r.json();
+
+  const term = new Terminal({ cols: 100, rows: 30, scrollback: 0, cursorBlink: false, macOptionIsMeta: true, fontFamily: 'ui-monospace, SFMono-Regular, Menlo, monospace', fontSize: 13,
+    theme: { background: '#161618', foreground: '#e6e6e6', cursor: '#e6e6e6' } });
+  const host = build('div', { className: 'term-host', testid: 'term-host' });
+  const status = build('span', { className: 'status', textContent: 'connecting…', testid: 'term-status' });
+  const ws = new WebSocket(`${location.protocol === 'https:' ? 'wss' : 'ws'}://${location.host}/ws/term?ticket=${ticket}`);
+  const send = (t, d) => ws.readyState === 1 && ws.send(JSON.stringify({ t, d }));
+  const close = () => { removeEventListener('resize', fit); ws.close(); term.dispose(); view.remove(); document.querySelector('[data-testid="peek-terminal"]')?.focus(); };  // the card re-renders while open, so the old button is gone
+  const reconnect = build('button', { textContent: 'Reconnect', hidden: true, testid: 'term-reconnect', onclick: () => { close(); openTerminal(s); } });
+  const view = build('div', { className: 'term-view', role: 'dialog', 'aria-label': `Terminal of ${s.name}`, testid: 'term-view' }, [
+    build('div', { className: 'term-bar' }, [
+      build('span', { className: 'name', textContent: s.name }), status, reconnect,
+      build('button', { textContent: 'Close (Ctrl+])', 'aria-label': 'Close terminal', testid: 'term-close', onclick: close }),
+    ]),
+    host,
+    build('div', { className: 'term-keys', role: 'group', 'aria-label': 'Special keys' }, TERM_KEYS.map(([label, seq]) =>
+      build('button', { textContent: label, onclick: () => { send('in', seq); term.focus(); } }))),
+  ]);
+  document.body.append(view);
+  term.open(host);
+
+  const ratio = (() => {  // width of one monospace cell per pixel of font size
+    const m = build('span', { textContent: 'M'.repeat(50), style: 'position:absolute;visibility:hidden;white-space:pre;font:100px ui-monospace, SFMono-Regular, Menlo, monospace' });
+    document.body.append(m); const w = m.getBoundingClientRect().width / 5000; m.remove(); return w;
+  })();
+  function fit() {  // scale the font so the session's whole screen fits; the real session is never resized
+    const avail = host.getBoundingClientRect(), screen = host.querySelector('.xterm-screen');
+    let size = Math.min(20, Math.floor((avail.width - 16) / (term.cols * ratio)));
+    for (; size > 6; size--) {
+      term.options.fontSize = size;
+      const box = screen.getBoundingClientRect();
+      if (box.width <= avail.width - 16 && box.height <= avail.height - 16) break;
+    }
+  }
+  addEventListener('resize', fit);
+
+  ws.onopen = () => { status.textContent = 'live'; status.classList.add('live'); term.focus(); };
+  ws.onmessage = e => {
+    const f = JSON.parse(e.data);
+    if (f.cols !== term.cols || f.rows !== term.rows) { term.resize(f.cols, f.rows); fit(); }
+    term.write(f.data);
+  };
+  ws.onclose = () => { status.textContent = 'disconnected'; status.classList.remove('live'); reconnect.hidden = false; };
+  term.onData(d => send('in', d));
+  term.textarea.addEventListener('paste', e => { e.preventDefault(); e.stopImmediatePropagation(); send('paste', e.clipboardData.getData('text')); }, true);  // bracketed, so multi-line text isn't submitted line by line
+  term.attachCustomKeyEventHandler(e => { if (e.type === 'keydown' && e.ctrlKey && e.key === ']') { close(); return false; } return true; });
+}
+
 function peekPanel(s) {
   const body = build('div', { className: 'peek-body ' + peekMode, testid: 'peek-body', tabIndex: 0, 'aria-label': `${peekMode} of ${s.name}` });
   if (peekPayload) fillBody(body, peekPayload); else body.textContent = 'Loading…';
@@ -235,6 +304,7 @@ function peekPanel(s) {
     build('div', { className: 'peek-head' }, [
       build('div', { className: 'seg-group', role: 'group', 'aria-label': 'View' }, [seg('transcript', 'Transcript'), seg('screen', 'Screen')]),
       build('span', { className: 'peek-title', textContent: s.name }),
+      (data.remote || innerWidth >= 520) && build('button', { className: 'icon', textContent: '⌨', title: 'Open a live terminal', 'aria-label': 'Open terminal', testid: 'peek-terminal', onclick: () => openTerminal(s) }),
       build('button', { className: 'icon', textContent: '✕', title: 'Close (Esc)', 'aria-label': 'Close peek', testid: 'peek-close', onclick: closePeek }),
     ]),
     body,
@@ -380,12 +450,12 @@ async function refresh() {
 }
 $('#filter').oninput = () => { store.set('filter', $('#filter').value); render(); };
 $('#hide').onchange = () => { store.set('hide', $('#hide').value); render(); };
-document.addEventListener('click', e => { if (peeking && !e.target.closest('.peek, [data-testid="session-peek"]')) closePeek(); });
+document.addEventListener('click', e => { if (peeking && !e.target.closest('.peek, .term-view, [data-testid="session-peek"]')) closePeek(); });
 let placeQueued = false;  // resize/scroll fire in bursts; place once per frame
 const placeSoon = () => { if (!placeQueued) { placeQueued = true; requestAnimationFrame(() => { placeQueued = false; placePeek(); }); } };
 addEventListener('resize', placeSoon);
 addEventListener('scroll', placeSoon, { passive: true });
-document.addEventListener('keydown', e => { if (e.key === 'Escape' && peeking) closePeek(); });
+document.addEventListener('keydown', e => { if (e.key === 'Escape' && peeking && !e.target.closest('.term-view')) closePeek(); });
 refresh(); setInterval(refresh, 1000); setInterval(peekTick, 1000);
 </script>
 </body>
