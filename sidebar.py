@@ -142,7 +142,7 @@ async def main(connection):
     app = await iterm2.async_get_app(connection)
 
     async def sessions(_):
-        return web.json_response({"groups": state.grouped([view(s) for s in live]), "closed": closed, "summary": summary(), "limits": state.limits()})
+        return web.json_response({"groups": state.grouped([view(s) for s in live]), "closed": closed, "summary": summary(), "limits": state.limits(), "version": (STATIC / "index.html").stat().st_mtime_ns})
 
     def guarded(handler):
         async def inner(request):

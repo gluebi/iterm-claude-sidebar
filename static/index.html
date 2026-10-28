@@ -152,10 +152,12 @@ function renderLimits() {
   $('#limits').replaceChildren(...rows);
 }
 
-let sig = '', last = 0;
+let sig = '', last = 0, version;
 async function refresh() {
   try {
     data = await (await fetch('/api/sessions')).json();
+    if (version && data.version !== version) return location.reload();  // UI file changed: toolbelt web views never reload on their own
+    version = data.version;
     const now = JSON.stringify(data);
     if (now !== sig || Date.now() - last > 10000) { sig = now; last = Date.now(); render(); }
   }
