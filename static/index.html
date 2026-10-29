@@ -45,7 +45,9 @@
   .peek-resize { display:none; position:absolute; left:-9px; top:12px; bottom:12px; width:14px; cursor:col-resize; touch-action:none; }
   .peek-resize::after { content:''; position:absolute; left:6px; top:calc(50% - 20px); width:3px; height:40px; border-radius:2px; background:var(--line); }
   .peek-resize:hover::after, .peek-resize:focus-visible::after { background:var(--busy); } .peek-resize:focus-visible { outline:none; }
-  .item.peeked > .row { background:var(--hover); }
+  .item.peeked > .row, .item.active > .row { background:var(--hover); }
+  .item.active > .row { box-shadow:inset 3px 0 var(--busy); }
+  .item.dragging { opacity:.4; } .item.drop-before { box-shadow:0 -2px 0 var(--busy); } .item.drop-after { box-shadow:0 2px 0 var(--busy); }
   .peek { position:absolute; z-index:20; left:-2px; right:-2px; top:calc(100% + 2px); display:grid; grid-template-columns:minmax(0, 1fr); gap:8px; padding:10px; background:var(--card); border:1px solid var(--line); border-radius:12px; box-shadow:var(--shadow); transform-origin:50% 0; }
   .peek.flip { top:auto; bottom:calc(100% + 2px); transform-origin:50% 100%; }
   .peek.enter { animation:peek-in .18s cubic-bezier(.2,.8,.2,1) both; } .peek.flip.enter { animation-name:peek-in-up; }
@@ -144,6 +146,7 @@ $('#hide').value = store.get('hide', '0');
 $('#filter').value = store.get('filter', '');
 let data = { groups: [], closed: [] };
 
+let dragging = null;  // the session being dragged; also pauses re-rendering
 let editing = false;  // pauses re-rendering so the input isn't destroyed mid-edit
 let peeking = null, peekMode = 'transcript', peekPayload = null, peekStick = true, peekBusy = false, peekEnter = false, closing = false, sendText = '', sendNote = null;
 const reduceMotion = matchMedia('(prefers-reduced-motion: reduce)').matches;
@@ -350,6 +353,41 @@ function peekPanel(s) {
   ]);
 }
 
+const siblingIds = project => data.groups.find(g => g.project === project).sessions.map(x => x.id);
+
+function moveSession(id, project, beforeId) {
+  const g = data.groups.find(x => x.project === project);
+  const ids = siblingIds(project).filter(x => x !== id);
+  ids.splice(beforeId ? ids.indexOf(beforeId) : ids.length, 0, id);
+  g.sessions.sort((a, b) => ids.indexOf(a.id) - ids.indexOf(b.id));
+  post('/api/reorder', { ids });
+  render();
+}
+
+function dragRow(s, item, row) {
+  const next = () => { const ids = siblingIds(s.project); return ids[ids.indexOf(s.id) + 1] ?? null; };
+  const clear = () => document.querySelectorAll('.drop-before, .drop-after').forEach(e => e.classList.remove('drop-before', 'drop-after'));
+  const after = e => { const r = row.getBoundingClientRect(); return e.clientY > r.top + r.height / 2; };
+  item.draggable = true;
+  item.ondragstart = e => {
+    if (editing) return e.preventDefault();
+    dragging = s; e.dataTransfer.effectAllowed = 'move'; e.dataTransfer.setData('text/plain', s.id);
+    requestAnimationFrame(() => item.classList.add('dragging'));
+  };
+  item.ondragover = e => {
+    if (!dragging || dragging.project !== s.project || dragging.id === s.id) return;
+    e.preventDefault(); clear();
+    item.classList.add(after(e) ? 'drop-after' : 'drop-before');
+  };
+  item.ondrop = e => {
+    if (!dragging || dragging.project !== s.project) return;
+    e.preventDefault(); clear();
+    const id = dragging.id, target = after(e) ? next() : s.id;
+    if (target !== id) moveSession(id, s.project, target);
+  };
+  item.ondragend = () => { dragging = null; clear(); item.classList.remove('dragging'); render(); };
+}
+
 function startRename(s, row) {
   if (editing) return;
   editing = true;
@@ -370,7 +408,7 @@ const prLabel = s => `PR #${s.pr.number}${s.pr.isDraft ? ' draft' : ''} · ${s.p
 
 function sessionRow(s) {
   const b = build('button', { className: 'row', title: s.cwd, key: 's' + s.id, testid: 'session-' + s.state,
-    'aria-label': `${s.name}, ${s.label}${s.unseen ? ', unseen' : ''}`, onclick: e => {
+    'aria-label': `${s.name}, ${s.label}${s.unseen ? ', unseen' : ''}${s.active ? ', active' : ''}`, 'aria-current': String(!!s.active), onclick: e => {
       e.currentTarget.blur();
       if (!data.remote) return post('/api/focus', { id: s.id });
       e.stopPropagation();  // otherwise the click-outside handler closes the peek this row just opened
@@ -388,8 +426,16 @@ function sessionRow(s) {
     ]),
     s.unseen && build('span', { className: 'new', textContent: 'new' }),
   ]);
-  b.onkeydown = e => { if (e.key === 'F2') { e.preventDefault(); startRename(s, b); } };
-  return build('div', { className: 'item' + (peeking === s.id ? ' peeked' : '') }, [
+  b.onkeydown = e => {
+    if (e.key === 'F2') { e.preventDefault(); startRename(s, b); }
+    if (e.altKey && (e.key === 'ArrowUp' || e.key === 'ArrowDown')) {
+      e.preventDefault();
+      const ids = siblingIds(s.project), i = ids.indexOf(s.id);
+      if (e.key === 'ArrowUp' && i > 0) moveSession(s.id, s.project, ids[i - 1]);
+      if (e.key === 'ArrowDown' && i < ids.length - 1) moveSession(s.id, s.project, ids[i + 2] ?? null);
+    }
+  };
+  const item = build('div', { className: 'item' + (peeking === s.id ? ' peeked' : '') + (s.active ? ' active' : ''), testid: 'session-item' }, [
     b,
     build('button', { className: 'icon peek-btn', textContent: '👁', key: 'v' + s.id, title: 'Peek and send', 'aria-label': `Peek at ${s.name}`, 'aria-expanded': String(peeking === s.id), testid: 'session-peek',
       onclick: () => peeking === s.id ? closePeek() : openPeek(s.id) }),
@@ -401,6 +447,8 @@ function sessionRow(s) {
     ]),
     peeking === s.id && peekPanel(s),
   ]);
+  dragRow(s, item, b);
+  return item;
 }
 
 function render() {
@@ -474,7 +522,7 @@ async function refresh() {
     version = data.version;
     const now = JSON.stringify(data);
     const typing = document.activeElement?.tagName === 'INPUT' && $('#list').contains(document.activeElement);
-    if (!editing && !typing && !closing && !resizing && (now !== sig || Date.now() - last > 10000)) { sig = now; last = Date.now(); render(); }
+    if (!editing && !dragging && !typing && !closing && !resizing && (now !== sig || Date.now() - last > 10000)) { sig = now; last = Date.now(); render(); }
   }
   catch { $('#list').replaceChildren(build('div', { className: 'err', textContent: 'sidebar daemon unreachable' })); }
 }

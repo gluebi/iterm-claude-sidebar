@@ -14,6 +14,7 @@ An iTerm2 toolbelt panel that lists your open [Claude Code](https://claude.com/c
 - State per session; "new" badge when one finished while you were elsewhere; macOS notification on waiting/failed
 - Branch, Jira-style key, PR (via `gh`, cached 2 min), context usage %, time in state
 - Filter, collapsible and pinnable projects, hide old done sessions, `+` starts `claude` in the project root
+- Reorder sessions within a project by dragging them or with Alt+↑/↓ on a focused row; the order is remembered
 - Rename sessions in the sidebar (✎ or F2; empty resets): an alias stored by the sidebar, Claude and the tab titles keep the original name
 - Remote use behind a reverse proxy with a responsive dashboard layout (see below)
 - Live terminal (⌨ in the peek): the session's real screen in the browser, with colors and real keystrokes, so permission prompts, menus, slash-command completion and multi-line paste work like in iTerm

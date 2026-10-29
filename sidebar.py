@@ -23,6 +23,7 @@ STATIC = Path(__file__).parent / "static"
 DATA = Path.home() / "Library" / "Application Support" / "iterm-claude-sidebar"
 CLOSED_FILE = DATA / "closed.json"
 ALIASES_FILE = DATA / "aliases.json"
+ORDER_FILE = DATA / "order.json"
 CONFIG_FILE = DATA / "config.json"  # optional: {"bind", "allow_from", "allowed_hosts"}, see README
 UUID = re.compile(r"^[0-9a-f-]{36}$")
 
@@ -45,9 +46,11 @@ LOCAL_HOST = f"127.0.0.1:{PORT}"  # the toolbelt's own address; any other Host m
 live: list[dict] = []
 closed: list[dict] = read_json(CLOSED_FILE, [])
 aliases: dict[str, str] = read_json(ALIASES_FILE, {})  # session id -> name chosen in the sidebar
+order: list[str] = read_json(ORDER_FILE, [])  # session ids in the sequence the user dragged them into
 unseen: set[str] = set()
 prs: dict[str, tuple[float, dict | None]] = {}  # cwd@branch -> (checked_at, PR)
 iterm_active = True
+active: str | None = None  # the session selected in iTerm's front window
 
 
 def summary() -> str:
@@ -192,12 +195,13 @@ def display_name(s):
 
 
 async def monitor(app):
-    global live
+    global live, active
     prev: dict[str, dict] = {}
     while True:
         live = await asyncio.to_thread(state.load)
         now = {s["id"]: s for s in live}
-        focus = await focused_id(app) if iterm_active else None
+        active = await focused_id(app)
+        focus = active if iterm_active else None
         for sid, s in now.items():
             old = prev.get(sid)
             if old and old["state"] != s["state"] and focus != sid:
@@ -220,26 +224,32 @@ async def monitor(app):
                 del closed[15:]
                 save_json(CLOSED_FILE, closed)
         closed[:] = [c for c in closed if c["id"] not in now]
-        gone = aliases.keys() - now.keys() - {c["id"] for c in closed} if aliases else ()  # sessions that are gone and not resumable
+        known = now.keys() | {c["id"] for c in closed}  # live or resumable
+        gone = aliases.keys() - known
         for sid in gone:
             del aliases[sid]
         if gone:
             save_json(ALIASES_FILE, aliases)
+        kept = [sid for sid in order if sid in known]
+        if len(kept) != len(order):
+            order[:] = kept
+            save_json(ORDER_FILE, order)
         prev = now
         await asyncio.sleep(1)
 
 
-async def focus_monitor(connection):
-    global iterm_active
+async def focus_monitor(connection, app):
+    global iterm_active, active
     async with iterm2.FocusMonitor(connection) as monitor_:
         while True:
             update = await monitor_.async_get_next_update()
             if update.application_active is not None:
                 iterm_active = update.application_active
+            active = await focused_id(app)  # tab and window switches land here at once instead of on the next monitor tick
 
 
 def view(s):
-    return s | {"name": display_name(s), "auto": s["name"], "unseen": s["id"] in unseen, "pr": prs.get(pr_key(s), (0, None))[1]}
+    return s | {"name": display_name(s), "auto": s["name"], "unseen": s["id"] in unseen, "active": s["id"] == active, "pr": prs.get(pr_key(s), (0, None))[1]}
 
 
 async def open_tab(connection, app, command):
@@ -252,7 +262,7 @@ async def main(connection):
     app = await iterm2.async_get_app(connection)
 
     async def sessions(request):
-        return web.json_response({"remote": request.host != LOCAL_HOST, "groups": state.grouped([view(s) for s in live]), "closed": [c | {"name": aliases.get(c["id"], c["name"])} for c in closed], "summary": summary(), "limits": state.limits(), "version": (STATIC / "index.html").stat().st_mtime_ns})
+        return web.json_response({"remote": request.host != LOCAL_HOST, "groups": state.grouped([view(s) for s in live], order), "closed": [c | {"name": aliases.get(c["id"], c["name"])} for c in closed], "summary": summary(), "limits": state.limits(), "version": (STATIC / "index.html").stat().st_mtime_ns})
 
     def guarded(handler):
         async def inner(request):
@@ -291,6 +301,14 @@ async def main(connection):
         else:
             aliases.pop(sid, None)  # empty resets to Claude's own name
         save_json(ALIASES_FILE, aliases)
+        return web.Response(status=204)
+
+    async def reorder(_, body):
+        ids = body.get("ids")
+        if not isinstance(ids, list) or not ids or not set(ids) <= {s["id"] for s in live}:
+            raise web.HTTPBadRequest()
+        order[:] = [sid for sid in order if sid not in ids] + ids  # only the relative order inside one project is ever compared
+        save_json(ORDER_FILE, order)
         return web.Response(status=204)
 
     async def peek(request):
@@ -374,6 +392,7 @@ async def main(connection):
         web.get("/ws/term", term_ws),
         web.static("/vendor", STATIC / "vendor"),
         web.post("/api/rename", guarded(rename)),
+        web.post("/api/reorder", guarded(reorder)),
         web.post("/api/new", guarded(new)),
         web.post("/api/resume", guarded(resume)),
         web.post("/api/open-pr", guarded(open_pr)),
@@ -410,7 +429,7 @@ async def main(connection):
         await reveal()
 
     await component.async_register(connection, status_coro, onclick=onclick)
-    await asyncio.gather(monitor(app), focus_monitor(connection))
+    await asyncio.gather(monitor(app), focus_monitor(connection, app))
 
 
 iterm2.run_forever(main)

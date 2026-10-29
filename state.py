@@ -169,11 +169,13 @@ def limits() -> dict:
     return {k: w | {"stale": (w.get("resets_at") or 0) < time.time()} for k, w in read_windows().items()}
 
 
-def grouped(sessions: list[dict]) -> list[dict]:
+def grouped(sessions: list[dict], order: list[str] = ()) -> list[dict]:
+    """Sessions sit in the user's drag order; ones never placed follow by name."""
+    rank = {sid: i for i, sid in enumerate(order)}
     groups: dict[str, list[dict]] = {}
     for s in sessions:
         groups.setdefault(s["project"], []).append(s)
-    return [{"project": p, "root": v[0]["root"], "sessions": sorted(v, key=lambda s: s["name"])} for p, v in sorted(groups.items())]
+    return [{"project": p, "root": v[0]["root"], "sessions": sorted(v, key=lambda s: (rank.get(s["id"], len(rank)), s["name"]))} for p, v in sorted(groups.items())]
 
 
 @ttl_cache(60)
@@ -193,4 +195,7 @@ if __name__ == "__main__":
     assert jira_key("feature/abc123") == ""
     assert tool_label({"name": "Bash", "input": {"command": "ls  -la\n/tmp"}}) == "Bash ls -la /tmp"
     assert conversation("no-such-session") == []
+    ids = lambda g: [x["id"] for x in g[0]["sessions"]]
+    sess = [{"id": i, "name": i, "project": "p", "root": "/p"} for i in "abc"]
+    assert ids(grouped(sess)) == ["a", "b", "c"] and ids(grouped(sess, ["c", "a"])) == ["c", "a", "b"]
     print("ok")
